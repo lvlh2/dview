@@ -78,11 +78,6 @@ impl Viewport {
             count += 1;
         }
         self.visible_cols = count.max(1);
-
-        // Re-anchor cursor with freshly computed visible_cols so that
-        // jump-to-end (go_col_end / $) works correctly on the first press.
-        self.ensure_row_visible();
-        self.ensure_col_visible();
     }
 
     // --- Cursor movement ---

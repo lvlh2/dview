@@ -40,7 +40,7 @@ cargo install --path .
 - **No grid lines**: Columns are separated by `COL_GAP = 3` spaces. Row separation relies entirely on alternating background colors (`row_bg_even`/`row_bg_odd`). There are no borders, no header separator, no vertical lines.
 - **Cell text is not truncated**: Column widths are computed from the widest cell. `fit_text` returns the text as-is. Wide content requires horizontal scrolling (H/L keys).
 - **CJK handling**: `put_text` uses `UnicodeWidthChar::width()` to advance cursor position (1 for ASCII, 2 for CJK). `compute_widths` in `data.rs` uses `UnicodeWidthStr::width()` for column width calculation.
-- **Viewport stale-visible fix**: `recalc_dimensions` calls `ensure_row_visible()` + `ensure_col_visible()` at the end so jump-to-end ($) works on the first press with freshly computed `visible_cols`.
+- **H/L view scroll**: `scroll_view_left`/`scroll_view_right` move only `scroll_col`, never the cursor. `recalc_dimensions` must NOT call `ensure_col_visible()` — doing so would snap the viewport back to contain the cursor on every frame, undoing the H/L scroll. Cursor-movement and jump functions each call their own `ensure_*_visible()` as needed.
 - **Empty cell cursor**: The cell fill loop draws the column's background across the full `column_width` before drawing text, so cursor highlight remains visible on empty cells.
 
 ### Viewport model
@@ -56,11 +56,15 @@ cargo install --path .
 |---|---|
 | `h` `j` `k` `l` / arrows | Move cursor |
 | `H` `L` | Scroll view left/right (cursor stays) |
-| `Ctrl+F` `Ctrl+B` | Page down/up |
+| `Ctrl+F`/`Ctrl+J` `Ctrl+B`/`Ctrl+K` | Page down/up |
 | `gg` (double-tap `g`) | Jump to first row |
 | `G` | Jump to last row |
 | `0` | Jump to first column |
 | `$` | Jump to last column |
+| `Home` | Jump to first row |
+| `End` | Jump to last row |
+| `PageUp` | Page up |
+| `PageDown` | Page down |
 | `q` `Esc` `Ctrl+C` | Quit |
 
 ### Data formats
