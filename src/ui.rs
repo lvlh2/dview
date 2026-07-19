@@ -1,0 +1,264 @@
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+
+use crate::app::App;
+use crate::colors::ColorPalette;
+
+/// Number of spaces between adjacent columns.
+const COL_GAP: u16 = 3;
+
+fn rect_right(area: Rect) -> u16 {
+    area.x + area.width
+}
+fn rect_bottom(area: Rect) -> u16 {
+    area.y + area.height
+}
+
+/// Render one frame.
+pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
+    let area = frame.area();
+    let palette = &app.palette;
+
+    let status_height = 1;
+    let table_area = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height.saturating_sub(status_height),
+    );
+
+    app.viewport.recalc_dimensions(
+        table_area.width,
+        table_area.height,
+        &app.data.column_widths,
+        app.data.total_rows(),
+    );
+
+    let buf = frame.buffer_mut();
+
+    // Fill entire background.
+    for y in table_area.y..rect_bottom(table_area) {
+        for x in table_area.x..rect_right(table_area) {
+            buf[(x, y)].set_char(' ').set_bg(palette.bg);
+        }
+    }
+
+    if app.data.total_rows() > 0 || app.data.total_cols() > 0 {
+        render_table(buf, table_area, app, palette);
+    }
+
+    render_status_bar(buf, area, app, palette);
+}
+
+// ---------------------------------------------------------------------------
+// Column position calculation
+// ---------------------------------------------------------------------------
+
+struct ColLayout {
+    /// x position of each visible column's text (including row-num as column -1).
+    xs: Vec<u16>,
+    /// The visible column indices.
+    vis_cols: Vec<usize>,
+    /// Width of the row-number column.
+    row_num_x: u16,
+    row_num_w: u16,
+    /// Number of visible data rows.
+    visible_rows: usize,
+}
+
+fn compute_layout(area: Rect, app: &App) -> ColLayout {
+    let vp = &app.viewport;
+    let total_cols = app.data.total_cols();
+
+    let vis_cols: Vec<usize> =
+        (vp.scroll_col..total_cols.min(vp.scroll_col + vp.visible_cols)).collect();
+
+    // Row number position.
+    let row_num_x = area.x + 1;
+    let row_num_w = vp.row_num_width.max(3);
+
+    // Data column positions.
+    let mut xs: Vec<u16> = Vec::with_capacity(vis_cols.len());
+    let mut x = row_num_x + row_num_w + COL_GAP;
+    for &ci in &vis_cols {
+        if x + app.data.column_widths.get(ci).copied().unwrap_or(4) as u16 > rect_right(area) {
+            break;
+        }
+        xs.push(x);
+        x += app.data.column_widths.get(ci).copied().unwrap_or(4) as u16 + COL_GAP;
+    }
+
+    let visible_rows = (rect_bottom(area).saturating_sub(area.y + 1)) as usize;
+
+    let vis_cols = vis_cols[..xs.len()].to_vec(); // trim to what fits
+
+    ColLayout {
+        xs,
+        vis_cols,
+        row_num_x,
+        row_num_w,
+        visible_rows,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Table rendering
+// ---------------------------------------------------------------------------
+
+fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette) {
+    let layout = compute_layout(area, app);
+    let vp = &app.viewport;
+
+    // --- Header row ---
+    let hdr_y = area.y;
+    // Fill header background across the full width.
+    for y_off in 0..1u16 {
+        for xi in area.x..rect_right(area) {
+            buf[(xi, hdr_y + y_off)]
+                .set_char(' ')
+                .set_bg(palette.header_bg);
+        }
+    }
+
+    // Row number header.
+    put_text(
+        buf,
+        layout.row_num_x,
+        hdr_y,
+        &format!("{:>width$}", "#", width = layout.row_num_w as usize),
+        Style::new().fg(palette.header_fg).bg(palette.header_bg),
+    );
+
+    // Column headers.
+    for (vi, &ci) in layout.vis_cols.iter().enumerate() {
+        let col_fg = palette.column_color(ci);
+        let style = Style::new().fg(col_fg).bg(palette.header_bg);
+        let text = &app.data.headers[ci];
+        put_text(buf, layout.xs[vi], hdr_y, text, style);
+    }
+
+    // --- Data rows ---
+    let data_start_y = area.y + 1;
+    for i in 0..layout.visible_rows {
+        let data_row = vp.scroll_row + i;
+        let screen_y = data_start_y + i as u16;
+
+        if screen_y >= rect_bottom(area) {
+            break;
+        }
+        if data_row >= app.data.total_rows() {
+            break;
+        }
+
+        let bg = if data_row % 2 == 0 {
+            palette.row_bg_even
+        } else {
+            palette.row_bg_odd
+        };
+        let is_cursor_row = data_row == vp.cursor_row;
+
+        // Fill row background.
+        for xi in area.x..rect_right(area) {
+            buf[(xi, screen_y)].set_char(' ').set_bg(bg);
+        }
+
+        // Row number.
+        let rn_style = if is_cursor_row {
+            Style::new().fg(palette.cursor_fg).bg(palette.cursor_bg)
+        } else {
+            Style::new().fg(palette.row_num_fg).bg(bg)
+        };
+        put_text(
+            buf,
+            layout.row_num_x,
+            screen_y,
+            &format!("{:>width$}", data_row + 1, width = layout.row_num_w as usize),
+            rn_style,
+        );
+
+        // Data cells.
+        let row = &app.data.rows[data_row];
+        for (vi, &ci) in layout.vis_cols.iter().enumerate() {
+            let col_fg = palette.column_color(ci);
+            let is_cursor_cell = is_cursor_row && ci == vp.cursor_col;
+            let col_w = app.data.column_widths.get(ci).copied().unwrap_or(4) as u16;
+
+            let cell_style = if is_cursor_cell {
+                Style::new().fg(palette.cursor_fg).bg(palette.cursor_bg)
+            } else {
+                Style::new().fg(col_fg).bg(bg)
+            };
+
+            // Fill full column width with the cell's background so the cursor
+            // remains visible even on empty cells.
+            for ox in 0..col_w {
+                let cx = layout.xs[vi] + ox;
+                if cx < rect_right(*buf.area()) {
+                    buf[(cx, screen_y)]
+                        .set_char(' ')
+                        .set_bg(cell_style.bg.unwrap_or(bg));
+                }
+            }
+
+            let cell_text = row.get(ci).map(|s| s.as_str()).unwrap_or("");
+            put_text(buf, layout.xs[vi], screen_y, cell_text, cell_style);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Status bar
+// ---------------------------------------------------------------------------
+
+fn render_status_bar(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette) {
+    let y = rect_bottom(area).saturating_sub(1);
+    let style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
+
+    for xi in area.x..rect_right(area) {
+        buf[(xi, y)].set_char(' ').set_bg(palette.header_bg);
+    }
+
+    let pos_info = if app.data.total_rows() > 0 {
+        format!(
+            " Row {}/{}  Col {}/{} ",
+            app.viewport.cursor_row + 1,
+            app.data.total_rows(),
+            app.viewport.cursor_col + 1,
+            app.data.total_cols(),
+        )
+    } else {
+        String::new()
+    };
+
+    let display: String = format!("{}{}", pos_info, app.status_message)
+        .chars()
+        .take(area.width as usize)
+        .collect();
+
+    for (i, ch) in display.chars().enumerate() {
+        let cx = area.x + i as u16;
+        if cx < rect_right(area) {
+            buf[(cx, y)].set_char(ch).set_style(style);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Place a string at (x, y). Does NOT fill past the text — caller should fill
+/// row background separately.
+fn put_text(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style) {
+    use unicode_width::UnicodeWidthChar;
+    let mut cx = x;
+    for ch in text.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        if cx + cw > rect_right(*buf.area()) {
+            break;
+        }
+        buf[(cx, y)].set_char(ch).set_style(style);
+        cx += cw;
+    }
+}

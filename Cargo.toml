@@ -1,0 +1,15 @@
+[package]
+name = "dview"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arrow = "59.1.0"
+calamine = "0.36.0"
+clap = { version = "4.6.2", features = ["derive"] }
+crossterm = "0.29.0"
+csv = "1.4.0"
+parquet = "59.1.0"
+ratatui = "0.30.2"
+unicode-width = "0.2.2"
