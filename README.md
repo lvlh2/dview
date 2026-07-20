@@ -6,9 +6,9 @@ A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and
 
 ## Screenshots
 
-| Table view | Help screen |
-|---|---|
-| ![table view](images/table.png) | ![help screen](images/help.png) |
+![table view](images/table.png)
+
+![help screen](images/help.png)
 
 ## Features
 
