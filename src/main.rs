@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load the data file.
-    let data = data::load_file(std::path::Path::new(&cli.file))?;
+    let sheets = data::load_file(std::path::Path::new(&cli.file))?;
 
     // Setup terminal.
     enable_raw_mode()?;
@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
     terminal.clear()?;
 
     // Run app.
-    let mut app = App::new(data);
+    let mut app = App::new(sheets);
     let result = app.run(&mut terminal);
 
     // Cleanup terminal.

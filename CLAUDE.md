@@ -5,12 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build / Test / Install
 
 ```bash
-# Build (with proxy if in China)
-export HTTPS_PROXY="http://127.0.0.1:7890"
 cargo build
 cargo run -- <file.csv>
 
-# Run all tests (44 tests across data + app modules)
+# Run all tests
 cargo test
 
 # Run a single test
@@ -65,6 +63,7 @@ cargo install --path .
 | `End` | Jump to last row |
 | `PageUp` | Page up |
 | `PageDown` | Page down |
+| `[` `]` | Previous / next sheet (multi-sheet Excel only) |
 | `?` | Toggle help screen (Esc to close) |
 | `q` `Esc` `Ctrl+C` | Quit |
 

@@ -26,19 +26,22 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         return;
     }
 
+    let tab_bar_height = if app.sheets.len() > 1 { 1u16 } else { 0u16 };
     let status_height = 1;
     let table_area = Rect::new(
         area.x,
         area.y,
         area.width,
-        area.height.saturating_sub(status_height),
+        area.height.saturating_sub(status_height + tab_bar_height),
     );
 
+    // Use inline field access so Rust can split borrows (app.sheets vs app.viewport).
+    let active_data = &app.sheets[app.active_sheet].1;
     app.viewport.recalc_dimensions(
         table_area.width,
         table_area.height,
-        &app.data.column_widths,
-        app.data.total_rows(),
+        &active_data.column_widths,
+        active_data.total_rows(),
     );
 
     // Fill entire background.
@@ -48,8 +51,14 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    if app.data.total_rows() > 0 || app.data.total_cols() > 0 {
+    if app.data().total_rows() > 0 || app.data().total_cols() > 0 {
         render_table(buf, table_area, app, palette);
+    }
+
+    // Tab bar (multi-sheet Excel only).
+    if tab_bar_height > 0 {
+        let tab_y = rect_bottom(table_area);
+        render_tab_bar(buf, area, tab_y, app, palette);
     }
 
     render_status_bar(buf, area, app, palette);
@@ -73,7 +82,7 @@ struct ColLayout {
 
 fn compute_layout(area: Rect, app: &App) -> ColLayout {
     let vp = &app.viewport;
-    let total_cols = app.data.total_cols();
+    let total_cols = app.data().total_cols();
 
     let vis_cols: Vec<usize> =
         (vp.scroll_col..total_cols.min(vp.scroll_col + vp.visible_cols)).collect();
@@ -86,11 +95,11 @@ fn compute_layout(area: Rect, app: &App) -> ColLayout {
     let mut xs: Vec<u16> = Vec::with_capacity(vis_cols.len());
     let mut x = row_num_x + row_num_w + COL_GAP;
     for &ci in &vis_cols {
-        if x + app.data.column_widths.get(ci).copied().unwrap_or(4) as u16 > rect_right(area) {
+        if x + app.data().column_widths.get(ci).copied().unwrap_or(4) as u16 > rect_right(area) {
             break;
         }
         xs.push(x);
-        x += app.data.column_widths.get(ci).copied().unwrap_or(4) as u16 + COL_GAP;
+        x += app.data().column_widths.get(ci).copied().unwrap_or(4) as u16 + COL_GAP;
     }
 
     let visible_rows = (rect_bottom(area).saturating_sub(area.y + 1)) as usize;
@@ -138,7 +147,7 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
     for (vi, &ci) in layout.vis_cols.iter().enumerate() {
         let col_fg = palette.column_color(ci);
         let style = Style::new().fg(col_fg).bg(palette.header_bg);
-        let text = &app.data.headers[ci];
+        let text = &app.data().headers[ci];
         put_text(buf, layout.xs[vi], hdr_y, text, style);
     }
 
@@ -151,7 +160,7 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
         if screen_y >= rect_bottom(area) {
             break;
         }
-        if data_row >= app.data.total_rows() {
+        if data_row >= app.data().total_rows() {
             break;
         }
 
@@ -182,11 +191,11 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
         );
 
         // Data cells.
-        let row = &app.data.rows[data_row];
+        let row = &app.data().rows[data_row];
         for (vi, &ci) in layout.vis_cols.iter().enumerate() {
             let col_fg = palette.column_color(ci);
             let is_cursor_cell = is_cursor_row && ci == vp.cursor_col;
-            let col_w = app.data.column_widths.get(ci).copied().unwrap_or(4) as u16;
+            let col_w = app.data().column_widths.get(ci).copied().unwrap_or(4) as u16;
 
             let cell_style = if is_cursor_cell {
                 Style::new().fg(palette.cursor_fg).bg(palette.cursor_bg)
@@ -223,13 +232,13 @@ fn render_status_bar(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPal
         buf[(xi, y)].set_char(' ').set_bg(palette.header_bg);
     }
 
-    let pos_info = if app.data.total_rows() > 0 {
+    let pos_info = if app.data().total_rows() > 0 {
         format!(
             " Row {}/{}  Col {}/{} ",
             app.viewport.cursor_row + 1,
-            app.data.total_rows(),
+            app.data().total_rows(),
             app.viewport.cursor_col + 1,
-            app.data.total_cols(),
+            app.data().total_cols(),
         )
     } else {
         String::new()
@@ -245,6 +254,60 @@ fn render_status_bar(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPal
         if cx < rect_right(area) {
             buf[(cx, y)].set_char(ch).set_style(style);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tab bar (multi-sheet Excel)
+// ---------------------------------------------------------------------------
+
+fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &ColorPalette) {
+    // Fill background.
+    for x in area.x..rect_right(area) {
+        buf[(x, y)].set_char(' ').set_bg(palette.header_bg);
+    }
+
+    // "[  sheet1  |  sheet2  |  sheet3  ]"
+    let active_style = Style::new()
+        .fg(palette.cursor_fg)
+        .bg(palette.cursor_bg);
+    let inactive_style = Style::new().fg(palette.header_fg).bg(palette.header_bg);
+    let bracket_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
+    let sep_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
+
+    let mut cx = area.x + 2; // left margin
+
+    // Left bracket.
+    buf[(cx, y)].set_char('[').set_style(bracket_style);
+    cx += 1;
+
+    for (i, (name, _)) in app.sheets.iter().enumerate() {
+        // Separator between tabs.
+        if i > 0 {
+            buf[(cx, y)].set_char('│').set_style(sep_style);
+            cx += 1;
+        }
+
+        let style = if i == app.active_sheet {
+            active_style
+        } else {
+            inactive_style
+        };
+
+        // Pad the tab name.
+        let label = format!(" {} ", name);
+        for ch in label.chars() {
+            if cx + 1 >= rect_right(area) {
+                break;
+            }
+            buf[(cx, y)].set_char(ch).set_style(style);
+            cx += 1;
+        }
+    }
+
+    // Right bracket.
+    if cx < rect_right(area) {
+        buf[(cx, y)].set_char(']').set_style(bracket_style);
     }
 }
 
@@ -290,6 +353,9 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
         ("Ctrl+B", "Page up"),
         ("PageDown", "Page down"),
         ("PageUp", "Page up"),
+        ("", ""),
+        ("", "Sheet  (multi-sheet Excel only)"),
+        ("[ / ]", "Previous / next sheet"),
         ("", ""),
         ("", "Other"),
         ("?", "Show / hide this help screen"),

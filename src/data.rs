@@ -46,18 +46,25 @@ impl DataTable {
 }
 
 /// Detect format by extension and load the file.
-pub fn load_file(path: &Path) -> Result<DataTable> {
+/// Returns a list of (sheet_name, DataTable) pairs.
+/// CSV/TSV/Parquet always return a single entry; Excel may return multiple.
+pub fn load_file(path: &Path) -> Result<Vec<(String, DataTable)>> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
 
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("data");
+
     match ext.as_str() {
-        "csv" => load_csv(path, b','),
-        "tsv" | "tab" => load_csv(path, b'\t'),
+        "csv" => Ok(vec![(stem.to_string(), load_csv(path, b',')?)]),
+        "tsv" | "tab" => Ok(vec![(stem.to_string(), load_csv(path, b'\t')?)]),
         "xls" | "xlsx" | "xlsm" | "xlsb" => load_excel(path),
-        "parquet" | "pq" => load_parquet(path),
+        "parquet" | "pq" => Ok(vec![(stem.to_string(), load_parquet(path)?)]),
         _ => Err(anyhow::anyhow!(
             "Unsupported file format: .{}\nSupported: csv, tsv, xls, xlsx, parquet",
             ext
@@ -97,45 +104,51 @@ fn load_csv(path: &Path, delimiter: u8) -> Result<DataTable> {
 // Excel loader (calamine)
 // ---------------------------------------------------------------------------
 
-fn load_excel(path: &Path) -> Result<DataTable> {
+fn load_excel(path: &Path) -> Result<Vec<(String, DataTable)>> {
     use calamine::{open_workbook_auto, Reader};
 
     let mut workbook = open_workbook_auto(path)?;
+    let sheet_names = workbook.sheet_names().to_vec();
 
-    let sheet_name = workbook
-        .sheet_names()
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Excel file has no sheets"))?;
-
-    let range = workbook.worksheet_range(&sheet_name)?;
-
-    let mut rows_iter = range.rows();
-
-    // First row = headers
-    let headers: Vec<String> = match rows_iter.next() {
-        Some(hdr) => hdr.iter().map(|c| cell_to_string(c)).collect(),
-        None => return Ok(DataTable::new(vec![], vec![])),
-    };
-
-    let mut rows = Vec::new();
-    for row in rows_iter {
-        let cells: Vec<String> = (0..headers.len())
-            .map(|i| {
-                if let Some(cell) = row.get(i) {
-                    cell_to_string(cell)
-                } else {
-                    String::new()
-                }
-            })
-            .collect();
-        // Skip fully empty rows
-        if cells.iter().any(|c| !c.is_empty()) {
-            rows.push(cells);
-        }
+    if sheet_names.is_empty() {
+        return Err(anyhow::anyhow!("Excel file has no sheets"));
     }
 
-    Ok(DataTable::new(headers, rows))
+    let mut sheets = Vec::with_capacity(sheet_names.len());
+    for name in &sheet_names {
+        let range = workbook.worksheet_range(name)?;
+        let mut rows_iter = range.rows();
+
+        // First row = headers
+        let headers: Vec<String> = match rows_iter.next() {
+            Some(hdr) => hdr.iter().map(|c| cell_to_string(c)).collect(),
+            None => {
+                sheets.push((name.clone(), DataTable::new(vec![], vec![])));
+                continue;
+            }
+        };
+
+        let mut rows = Vec::new();
+        for row in rows_iter {
+            let cells: Vec<String> = (0..headers.len())
+                .map(|i| {
+                    if let Some(cell) = row.get(i) {
+                        cell_to_string(cell)
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect();
+            // Skip fully empty rows
+            if cells.iter().any(|c| !c.is_empty()) {
+                rows.push(cells);
+            }
+        }
+
+        sheets.push((name.clone(), DataTable::new(headers, rows)));
+    }
+
+    Ok(sheets)
 }
 
 fn cell_to_string(cell: &Data) -> String {
@@ -267,7 +280,8 @@ mod tests {
     #[test]
     fn test_load_csv() {
         let path = write_temp("csv", "Name,Age,Score\nAlice,30,95.5\nBob,25,87.3\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.headers, vec!["Name", "Age", "Score"]);
         assert_eq!(table.total_rows(), 2);
         assert_eq!(table.total_cols(), 3);
@@ -286,7 +300,8 @@ mod tests {
     #[test]
     fn test_load_tsv() {
         let path = write_temp("tsv", "ColA\tColB\nx1\ty1\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.headers, vec!["ColA", "ColB"]);
         assert_eq!(table.total_rows(), 1);
         assert_eq!(table.rows[0], vec!["x1", "y1"]);
@@ -296,7 +311,8 @@ mod tests {
     #[test]
     fn test_load_tab_extension() {
         let path = write_temp("tab", "X\tY\n1\t2\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.headers, vec!["X", "Y"]);
         assert_eq!(table.total_rows(), 1);
         std::fs::remove_file(&path).ok();
@@ -309,7 +325,8 @@ mod tests {
     #[test]
     fn test_csv_empty_fields() {
         let path = write_temp("csv", "A,B,C\n,,\nalpha,,gamma\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.rows[0], vec!["", "", ""]);
         assert_eq!(table.rows[1], vec!["alpha", "", "gamma"]);
         std::fs::remove_file(&path).ok();
@@ -319,7 +336,8 @@ mod tests {
     fn test_csv_quoted_fields() {
         let path =
             write_temp("csv", "Name,Note\nAlice,\"hello, world\"\nBob,\"say \"\"hi\"\"\"\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.rows[0][1], "hello, world");
         assert!(table.rows[1][1].contains("hi"));
         std::fs::remove_file(&path).ok();
@@ -328,7 +346,8 @@ mod tests {
     #[test]
     fn test_csv_headers_only() {
         let path = write_temp("csv", "Col1,Col2,Col3\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.headers.len(), 3);
         assert_eq!(table.total_rows(), 0);
         std::fs::remove_file(&path).ok();
@@ -337,7 +356,8 @@ mod tests {
     #[test]
     fn test_csv_single_column() {
         let path = write_temp("csv", "Only\n1\n2\n3\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.total_cols(), 1);
         assert_eq!(table.total_rows(), 3);
         assert_eq!(table.rows[2], vec!["3"]);
@@ -351,7 +371,8 @@ mod tests {
     #[test]
     fn test_cjk_column_widths() {
         let path = write_temp("csv", "ID,城市\n1,北京\n2,上海\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         // "城市" / "北京" / "上海" each has width 4 (2 CJK chars × 2).
         // Column widths should be ≥ 4 with .max(4).
         assert_eq!(table.column_widths[0], 4); // "ID" → 2, max(4) → 4
@@ -362,7 +383,8 @@ mod tests {
     #[test]
     fn test_cjk_data_loaded_correctly() {
         let path = write_temp("csv", "名称,价格\n苹果,5\n香蕉,3\n");
-        let table = load_file(&path).unwrap();
+        let sheets = load_file(&path).unwrap();
+        let table = &sheets[0].1;
         assert_eq!(table.rows[0], vec!["苹果", "5"]);
         assert_eq!(table.rows[1], vec!["香蕉", "3"]);
         std::fs::remove_file(&path).ok();

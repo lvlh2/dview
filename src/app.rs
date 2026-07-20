@@ -220,7 +220,10 @@ impl Viewport {
 
 /// Main application state and event loop.
 pub struct App {
-    pub data: DataTable,
+    /// All loaded sheets (name, table).
+    pub sheets: Vec<(String, DataTable)>,
+    /// Index into self.sheets.
+    pub active_sheet: usize,
     pub viewport: Viewport,
     pub palette: ColorPalette,
     pub running: bool,
@@ -230,14 +233,21 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(data: DataTable) -> Self {
-        let status = format!(
-            "{} rows × {} cols | ?:help  q:quit",
-            data.total_rows(),
-            data.total_cols()
-        );
+    pub fn new(sheets: Vec<(String, DataTable)>) -> Self {
+        let has_sheets = !sheets.is_empty();
+        let data = sheets.first().map(|(_, t)| t);
+        let status = if let Some(d) = data {
+            format!(
+                "{} rows × {} cols | ?:help  q:quit",
+                d.total_rows(),
+                d.total_cols()
+            )
+        } else {
+            "? :help  q:quit".into()
+        };
         Self {
-            data,
+            sheets,
+            active_sheet: if has_sheets { 0 } else { 0 },
             viewport: Viewport::new(),
             palette: ColorPalette::default(),
             running: false,
@@ -245,6 +255,30 @@ impl App {
             show_help: false,
             status_message: status,
         }
+    }
+
+    /// Reference to the currently active data table.
+    pub fn data(&self) -> &DataTable {
+        &self.sheets[self.active_sheet].1
+    }
+
+    fn sheet_count(&self) -> usize {
+        self.sheets.len()
+    }
+
+    fn switch_sheet(&mut self, delta: isize) {
+        let n = self.sheet_count();
+        if n <= 1 {
+            return;
+        }
+        self.active_sheet = ((self.active_sheet as isize + delta + n as isize) as usize) % n;
+        self.viewport = Viewport::new();
+        let d = self.data();
+        self.status_message = format!(
+            "{} rows × {} cols | ?:help  q:quit",
+            d.total_rows(),
+            d.total_cols()
+        );
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<impl ratatui::backend::Backend>) -> anyhow::Result<()> {
@@ -289,7 +323,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('f') => {
-                    self.viewport.page_down(self.data.total_rows());
+                    self.viewport.page_down(self.data().total_rows());
                 }
                 KeyCode::Char('b') => {
                     self.viewport.page_up();
@@ -308,16 +342,16 @@ impl App {
 
             // Movement: hjkl
             KeyCode::Char('h') => {
-                self.viewport.move_left(self.data.total_cols());
+                self.viewport.move_left(self.data().total_cols());
             }
             KeyCode::Char('j') => {
-                self.viewport.move_down(self.data.total_rows());
+                self.viewport.move_down(self.data().total_rows());
             }
             KeyCode::Char('k') => {
                 self.viewport.move_up();
             }
             KeyCode::Char('l') => {
-                self.viewport.move_right(self.data.total_cols());
+                self.viewport.move_right(self.data().total_cols());
             }
 
             // View scroll: HJKL
@@ -325,10 +359,10 @@ impl App {
                 self.viewport.scroll_view_left();
             }
             KeyCode::Char('L') => {
-                self.viewport.scroll_view_right(self.data.total_cols());
+                self.viewport.scroll_view_right(self.data().total_cols());
             }
             KeyCode::Char('J') => {
-                self.viewport.scroll_view_down(self.data.total_rows());
+                self.viewport.scroll_view_down(self.data().total_rows());
             }
             KeyCode::Char('K') => {
                 self.viewport.scroll_view_up();
@@ -339,53 +373,57 @@ impl App {
                 self.viewport.scroll_view_left();
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.viewport.scroll_view_right(self.data.total_cols());
+                self.viewport.scroll_view_right(self.data().total_cols());
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.viewport.scroll_view_up();
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.viewport.scroll_view_down(self.data.total_rows());
+                self.viewport.scroll_view_down(self.data().total_rows());
             }
 
             // Arrow keys: cursor movement (no modifiers)
             KeyCode::Left => {
-                self.viewport.move_left(self.data.total_cols());
+                self.viewport.move_left(self.data().total_cols());
             }
             KeyCode::Right => {
-                self.viewport.move_right(self.data.total_cols());
+                self.viewport.move_right(self.data().total_cols());
             }
             KeyCode::Up => {
                 self.viewport.move_up();
             }
             KeyCode::Down => {
-                self.viewport.move_down(self.data.total_rows());
+                self.viewport.move_down(self.data().total_rows());
             }
+
+            // Sheet navigation: [ / ]
+            KeyCode::Char('[') => self.switch_sheet(-1),
+            KeyCode::Char(']') => self.switch_sheet(1),
 
             // Jump: g (first press of gg) / G (last row) / 0 (first col) / $ (last col)
             KeyCode::Char('g') => {
                 self.gg_pending = true;
             }
             KeyCode::Char('G') => {
-                self.viewport.go_bottom(self.data.total_rows());
+                self.viewport.go_bottom(self.data().total_rows());
             }
             KeyCode::Char('0') => {
                 self.viewport.go_col_start();
             }
             KeyCode::Char('$') => {
-                self.viewport.go_col_end(self.data.total_cols());
+                self.viewport.go_col_end(self.data().total_cols());
             }
 
             // Page up/down (without Ctrl)
             KeyCode::PageDown => {
-                self.viewport.page_down(self.data.total_rows());
+                self.viewport.page_down(self.data().total_rows());
             }
             KeyCode::PageUp => {
                 self.viewport.page_up();
             }
             KeyCode::Home => self.viewport.go_top(),
             KeyCode::End => {
-                self.viewport.go_bottom(self.data.total_rows());
+                self.viewport.go_bottom(self.data().total_rows());
             }
 
             _ => {}
@@ -736,7 +774,18 @@ mod tests {
     // -------------------------------------------------------------------
 
     fn make_app(rows: usize, cols: usize) -> App {
-        App::new(make_table(rows, cols))
+        App::new(vec![("Sheet1".into(), make_table(rows, cols))])
+    }
+
+    fn make_multi_sheet_app() -> App {
+        let t1 = make_table(20, 5);
+        let t2 = make_table(10, 8);
+        let t3 = make_table(15, 3);
+        App::new(vec![
+            ("Data".into(), t1),
+            ("Summary".into(), t2),
+            ("Notes".into(), t3),
+        ])
     }
 
     fn ctrl_key(ch: char) -> KeyEvent {
@@ -1022,5 +1071,61 @@ mod tests {
         app.handle_key(press('q'));
         assert!(app.running);
         assert!(app.show_help);
+    }
+
+    // -------------------------------------------------------------------
+    // Sheet navigation
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_sheet_switch_brackets() {
+        let mut app = make_multi_sheet_app();
+        assert_eq!(app.active_sheet, 0);
+
+        // ] → next sheet
+        app.handle_key(press(']'));
+        assert_eq!(app.active_sheet, 1);
+
+        // ] again → next
+        app.handle_key(press(']'));
+        assert_eq!(app.active_sheet, 2);
+
+        // ] wraps around
+        app.handle_key(press(']'));
+        assert_eq!(app.active_sheet, 0);
+
+        // [ wraps backward
+        app.handle_key(press('['));
+        assert_eq!(app.active_sheet, 2);
+    }
+
+    #[test]
+    fn test_sheet_switch_resets_viewport() {
+        let mut app = make_multi_sheet_app();
+        app.viewport.cursor_row = 5;
+        app.viewport.cursor_col = 3;
+        app.viewport.scroll_row = 2;
+        app.viewport.scroll_col = 1;
+
+        app.handle_key(press(']'));
+        assert_eq!(app.active_sheet, 1);
+        // Viewport should be reset.
+        assert_eq!(app.viewport.cursor_row, 0);
+        assert_eq!(app.viewport.cursor_col, 0);
+        assert_eq!(app.viewport.scroll_row, 0);
+        assert_eq!(app.viewport.scroll_col, 0);
+    }
+
+    #[test]
+    fn test_sheet_switch_single_sheet_noop() {
+        // Single-sheet files: [ / ] are no-ops.
+        let mut app = make_app(10, 5);
+        assert_eq!(app.active_sheet, 0);
+
+        app.handle_key(press(']'));
+        assert_eq!(app.active_sheet, 0);
+
+        app.handle_key(press('['));
+        assert_eq!(app.active_sheet, 0);
     }
 }
