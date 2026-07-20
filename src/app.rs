@@ -225,13 +225,14 @@ pub struct App {
     pub palette: ColorPalette,
     pub running: bool,
     pub gg_pending: bool,
+    pub show_help: bool,
     pub status_message: String,
 }
 
 impl App {
     pub fn new(data: DataTable) -> Self {
         let status = format!(
-            "{} rows × {} cols | q:quit  hjkl:move  HJKL:scroll view  0/$:col start/end  gg/G:row start/end  Ctrl+F/B:page down/up",
+            "{} rows × {} cols | ?:help  q:quit",
             data.total_rows(),
             data.total_cols()
         );
@@ -241,6 +242,7 @@ impl App {
             palette: ColorPalette::default(),
             running: false,
             gg_pending: false,
+            show_help: false,
             status_message: status,
         }
     }
@@ -264,6 +266,15 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Help screen is modal — only Esc or ? dismiss it.
+        if self.show_help {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') => self.show_help = false,
+                _ => {}
+            }
+            return;
+        }
+
         // Resolve gg double-press
         if self.gg_pending {
             self.gg_pending = false;
@@ -277,10 +288,10 @@ impl App {
         // Ctrl+ combinations
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('f') | KeyCode::Char('j') => {
+                KeyCode::Char('f') => {
                     self.viewport.page_down(self.data.total_rows());
                 }
-                KeyCode::Char('b') | KeyCode::Char('k') => {
+                KeyCode::Char('b') => {
                     self.viewport.page_up();
                 }
                 KeyCode::Char('c') => {
@@ -293,22 +304,23 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
+            KeyCode::Char('?') => self.show_help = true,
 
             // Movement: hjkl
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') => {
                 self.viewport.move_left(self.data.total_cols());
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') => {
                 self.viewport.move_down(self.data.total_rows());
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k') => {
                 self.viewport.move_up();
             }
-            KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Char('l') => {
                 self.viewport.move_right(self.data.total_cols());
             }
 
-            // View scroll (moves cursor with view): H / L / J / K
+            // View scroll: HJKL
             KeyCode::Char('H') => {
                 self.viewport.scroll_view_left();
             }
@@ -320,6 +332,34 @@ impl App {
             }
             KeyCode::Char('K') => {
                 self.viewport.scroll_view_up();
+            }
+
+            // View scroll: Shift+arrows (same as HJKL)
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.viewport.scroll_view_left();
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.viewport.scroll_view_right(self.data.total_cols());
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.viewport.scroll_view_up();
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.viewport.scroll_view_down(self.data.total_rows());
+            }
+
+            // Arrow keys: cursor movement (no modifiers)
+            KeyCode::Left => {
+                self.viewport.move_left(self.data.total_cols());
+            }
+            KeyCode::Right => {
+                self.viewport.move_right(self.data.total_cols());
+            }
+            KeyCode::Up => {
+                self.viewport.move_up();
+            }
+            KeyCode::Down => {
+                self.viewport.move_down(self.data.total_rows());
             }
 
             // Jump: g (first press of gg) / G (last row) / 0 (first col) / $ (last col)
@@ -760,6 +800,37 @@ mod tests {
     }
 
     #[test]
+    fn test_shift_arrows_scroll_view() {
+        let mut app = make_app(30, 20);
+        app.viewport.visible_rows = 5;
+        app.viewport.visible_cols = 3;
+        app.viewport.cursor_row = 10;
+        app.viewport.cursor_col = 10;
+
+        let shift = KeyModifiers::SHIFT;
+
+        // Shift+Right scrolls view right, cursor follows
+        app.handle_key(KeyEvent::new(KeyCode::Right, shift));
+        assert_eq!(app.viewport.scroll_col, 1);
+        assert_eq!(app.viewport.cursor_col, 11);
+
+        // Shift+Left scrolls view left
+        app.handle_key(KeyEvent::new(KeyCode::Left, shift));
+        assert_eq!(app.viewport.scroll_col, 0);
+        assert_eq!(app.viewport.cursor_col, 10);
+
+        // Shift+Down scrolls view down
+        app.handle_key(KeyEvent::new(KeyCode::Down, shift));
+        assert_eq!(app.viewport.scroll_row, 1);
+        assert_eq!(app.viewport.cursor_row, 11);
+
+        // Shift+Up scrolls view up
+        app.handle_key(KeyEvent::new(KeyCode::Up, shift));
+        assert_eq!(app.viewport.scroll_row, 0);
+        assert_eq!(app.viewport.cursor_row, 10);
+    }
+
+    #[test]
     fn test_handle_key_ctrl_f_b() {
         let mut app = make_app(30, 3);
         app.viewport.visible_rows = 5;
@@ -768,6 +839,18 @@ mod tests {
 
         app.handle_key(ctrl_key('b'));
         assert_eq!(app.viewport.cursor_row, 0);
+    }
+
+    #[test]
+    fn test_ctrl_j_k_no_longer_page() {
+        // Ctrl+J / Ctrl+K no longer trigger page down/up.
+        let mut app = make_app(30, 3);
+        app.viewport.visible_rows = 5;
+        let row_before = app.viewport.cursor_row;
+        app.handle_key(ctrl_key('j'));
+        assert_eq!(app.viewport.cursor_row, row_before);
+        app.handle_key(ctrl_key('k'));
+        assert_eq!(app.viewport.cursor_row, row_before);
     }
 
     #[test]
@@ -884,5 +967,60 @@ mod tests {
         app.handle_key(press('x')); // unmapped key
         assert_eq!(app.viewport.cursor_row, row_before); // unchanged
         assert!(app.running); // still running
+    }
+
+    // -------------------------------------------------------------------
+    // Help screen
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_help_toggle() {
+        let mut app = make_app(10, 5);
+
+        // ? opens help
+        app.handle_key(press('?'));
+        assert!(app.show_help);
+
+        // ? again closes help
+        app.handle_key(press('?'));
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn test_esc_closes_help_does_not_quit() {
+        let mut app = make_app(10, 5);
+        app.running = true;
+        app.show_help = true;
+
+        // Esc should close help, NOT quit the app.
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.show_help);
+        assert!(app.running);
+    }
+
+    #[test]
+    fn test_keys_ignored_during_help() {
+        let mut app = make_app(30, 20);
+        app.viewport.visible_rows = 5;
+        app.viewport.visible_cols = 3;
+        app.show_help = true;
+        let cursor_before = (app.viewport.cursor_row, app.viewport.cursor_col);
+
+        // hjkl movement keys are ignored when help is shown.
+        app.handle_key(press('j'));
+        assert_eq!(app.viewport.cursor_row, cursor_before.0);
+
+        app.handle_key(press('l'));
+        assert_eq!(app.viewport.cursor_col, cursor_before.1);
+
+        // H/L scroll keys are ignored.
+        app.handle_key(press('L'));
+        assert_eq!(app.viewport.scroll_col, 0);
+
+        // q does NOT quit while help is shown.
+        app.running = true;
+        app.handle_key(press('q'));
+        assert!(app.running);
+        assert!(app.show_help);
     }
 }

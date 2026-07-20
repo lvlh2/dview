@@ -19,6 +19,12 @@ fn rect_bottom(area: Rect) -> u16 {
 pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
     let palette = &app.palette;
+    let buf = frame.buffer_mut();
+
+    if app.show_help {
+        render_help_screen(buf, area, palette);
+        return;
+    }
 
     let status_height = 1;
     let table_area = Rect::new(
@@ -34,8 +40,6 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         &app.data.column_widths,
         app.data.total_rows(),
     );
-
-    let buf = frame.buffer_mut();
 
     // Fill entire background.
     for y in table_area.y..rect_bottom(table_area) {
@@ -240,6 +244,163 @@ fn render_status_bar(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPal
         let cx = area.x + i as u16;
         if cx < rect_right(area) {
             buf[(cx, y)].set_char(ch).set_style(style);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Help screen
+// ---------------------------------------------------------------------------
+
+fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
+    // Fill background.
+    for y in area.y..rect_bottom(area) {
+        for x in area.x..rect_right(area) {
+            buf[(x, y)].set_char(' ').set_bg(palette.header_bg);
+        }
+    }
+
+    let fg = palette.header_fg;
+    let bg = palette.header_bg;
+
+    // Help content: (label, description) pairs.  A label of "" is a section header.
+    let lines: &[(&str, &str)] = &[
+        ("", "Navigation"),
+        ("h / Left", "Move cursor left one column"),
+        ("j / Down", "Move cursor down one row"),
+        ("k / Up", "Move cursor up one row"),
+        ("l / Right", "Move cursor right one column"),
+        ("", ""),
+        ("", "View Scroll  (cursor moves with view)"),
+        ("H / Shift+Left", "Scroll view left one column"),
+        ("J / Shift+Down", "Scroll view down one row"),
+        ("K / Shift+Up", "Scroll view up one row"),
+        ("L / Shift+Right", "Scroll view right one column"),
+        ("", ""),
+        ("", "Jump"),
+        ("gg", "Jump to first row  (press g twice)"),
+        ("G", "Jump to last row"),
+        ("0", "Jump to first column"),
+        ("$", "Jump to last column"),
+        ("Home", "Jump to first row"),
+        ("End", "Jump to last row"),
+        ("", ""),
+        ("", "Page"),
+        ("Ctrl+F", "Page down"),
+        ("Ctrl+B", "Page up"),
+        ("PageDown", "Page down"),
+        ("PageUp", "Page up"),
+        ("", ""),
+        ("", "Other"),
+        ("?", "Show / hide this help screen"),
+        ("Esc / q", "Quit dview"),
+        ("Ctrl+C", "Quit dview"),
+    ];
+
+    let footer = " Press Esc or ? to close help ";
+
+    // Box dimensions.
+    let label_width: u16 = 18;
+    let gap: u16 = 3;
+    let content_width: u16 = label_width + gap + 36; // 36 for description
+    let inner_w: u16 = content_width;
+    let inner_h: u16 = lines.len() as u16 + 3; // +2 blank rows + footer
+
+    // Clamp to terminal.
+    let box_w = (inner_w + 2).min(area.width.saturating_sub(2));
+    let box_h = (inner_h + 2).min(area.height.saturating_sub(2));
+    let ox = area.x + (area.width.saturating_sub(box_w)) / 2;
+    let oy = area.y + (area.height.saturating_sub(box_h)) / 2;
+
+    let style = Style::new().fg(fg).bg(bg);
+
+    // Draw border.
+    // Top edge.
+    buf[(ox, oy)].set_char('┌').set_style(style);
+    for x in ox + 1..ox + box_w - 1 {
+        buf[(x, oy)].set_char('─').set_style(style);
+    }
+    buf[(ox + box_w - 1, oy)].set_char('┐').set_style(style);
+
+    // Bottom edge.
+    let by = oy + box_h - 1;
+    buf[(ox, by)].set_char('└').set_style(style);
+    for x in ox + 1..ox + box_w - 1 {
+        buf[(x, by)].set_char('─').set_style(style);
+    }
+    buf[(ox + box_w - 1, by)].set_char('┘').set_style(style);
+
+    // Side edges.
+    for y in oy + 1..by {
+        buf[(ox, y)].set_char('│').set_style(style);
+        buf[(ox + box_w - 1, y)].set_char('│').set_style(style);
+    }
+
+    // Title.
+    let title = " Help ";
+    let tx = ox + 2;
+    for (i, ch) in title.chars().enumerate() {
+        let cx = tx + i as u16;
+        if cx < ox + box_w - 1 {
+            buf[(cx, oy)].set_char(ch).set_style(style);
+        }
+    }
+
+    // Render content lines.
+    let content_x = ox + 2;
+    let content_y = oy + 1;
+    let desc_x = content_x + label_width + gap;
+
+    for (li, (label, desc)) in lines.iter().enumerate() {
+        let y = content_y + li as u16;
+        if y >= oy + box_h - 1 {
+            break;
+        }
+
+        if label.is_empty() && desc.is_empty() {
+            // Blank separator line.
+            continue;
+        }
+
+        if label.is_empty() {
+            // Section header.
+            let hdr_style = Style::new().fg(palette.row_num_fg).bg(bg);
+            for (i, ch) in desc.chars().enumerate() {
+                let cx = content_x + i as u16;
+                if cx < ox + box_w - 1 {
+                    buf[(cx, y)].set_char(ch).set_style(hdr_style);
+                }
+            }
+        } else {
+            // Key label — right-aligned within label_width.
+            let label_style = Style::new().fg(palette.column_color(0)).bg(bg);
+            let padding = label_width as usize - label.len();
+            for (i, ch) in format!("{:>width$}", label, width = label.len() + padding).chars().enumerate() {
+                let cx = content_x + i as u16;
+                if cx < ox + box_w - 1 {
+                    buf[(cx, y)].set_char(ch).set_style(label_style);
+                }
+            }
+            // Description.
+            let desc_style = Style::new().fg(fg).bg(bg);
+            for (i, ch) in desc.chars().enumerate() {
+                let cx = desc_x + i as u16;
+                if cx < ox + box_w - 1 {
+                    buf[(cx, y)].set_char(ch).set_style(desc_style);
+                }
+            }
+        }
+    }
+
+    // Footer.
+    let fy = oy + box_h - 2;
+    let footer_pad = (box_w as usize - 2).saturating_sub(footer.len()) / 2;
+    let footer_x = ox + 1 + footer_pad as u16;
+    let footer_style = Style::new().fg(palette.row_num_fg).bg(bg);
+    for (i, ch) in footer.chars().enumerate() {
+        let cx = footer_x + i as u16;
+        if cx < ox + box_w - 1 {
+            buf[(cx, fy)].set_char(ch).set_style(footer_style);
         }
     }
 }

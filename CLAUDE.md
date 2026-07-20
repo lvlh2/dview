@@ -55,8 +55,8 @@ cargo install --path .
 | Keys | Action |
 |---|---|
 | `h` `j` `k` `l` / arrows | Move cursor |
-| `H` `L` `J` `K` | Scroll view left/right/up/down (cursor follows, stays at same screen position) |
-| `Ctrl+F`/`Ctrl+J` `Ctrl+B`/`Ctrl+K` | Page down/up |
+| `H` `L` `J` `K` / Shift+arrows | Scroll view left/right/up/down (cursor follows, stays at same screen position) |
+| `Ctrl+F` `Ctrl+B` | Page down/up |
 | `gg` (double-tap `g`) | Jump to first row |
 | `G` | Jump to last row |
 | `0` | Jump to first column |
@@ -65,6 +65,7 @@ cargo install --path .
 | `End` | Jump to last row |
 | `PageUp` | Page up |
 | `PageDown` | Page down |
+| `?` | Toggle help screen (Esc to close) |
 | `q` `Esc` `Ctrl+C` | Quit |
 
 ### Data formats
