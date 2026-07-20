@@ -155,16 +155,41 @@ impl Viewport {
         self.ensure_col_visible();
     }
 
-    // --- Horizontal view scroll (H/L keys, moves view NOT cursor) ---
+    // --- View scroll (H/L horizontal, J/K vertical) ---
+    // These move both the viewport AND the cursor so the cursor
+    // stays at the same relative screen position.
 
     pub fn scroll_view_left(&mut self) {
         self.scroll_col = self.scroll_col.saturating_sub(1);
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+        }
     }
 
     pub fn scroll_view_right(&mut self, total_cols: usize) {
         let max_scroll = total_cols.saturating_sub(self.visible_cols);
         if self.scroll_col < max_scroll {
             self.scroll_col += 1;
+        }
+        if self.cursor_col + 1 < total_cols {
+            self.cursor_col += 1;
+        }
+    }
+
+    pub fn scroll_view_up(&mut self) {
+        self.scroll_row = self.scroll_row.saturating_sub(1);
+        if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+        }
+    }
+
+    pub fn scroll_view_down(&mut self, total_rows: usize) {
+        let max_scroll = total_rows.saturating_sub(self.visible_rows);
+        if self.scroll_row < max_scroll {
+            self.scroll_row += 1;
+        }
+        if self.cursor_row + 1 < total_rows {
+            self.cursor_row += 1;
         }
     }
 
@@ -206,7 +231,7 @@ pub struct App {
 impl App {
     pub fn new(data: DataTable) -> Self {
         let status = format!(
-            "{} rows × {} cols | q:quit  hjkl:move  H/L:scroll view  0/$:col start/end  gg/G:row start/end  Ctrl+F/B:page down/up",
+            "{} rows × {} cols | q:quit  hjkl:move  HJKL:scroll view  0/$:col start/end  gg/G:row start/end  Ctrl+F/B:page down/up",
             data.total_rows(),
             data.total_cols()
         );
@@ -283,12 +308,18 @@ impl App {
                 self.viewport.move_right(self.data.total_cols());
             }
 
-            // Horizontal view scroll: H / L
+            // View scroll (moves cursor with view): H / L / J / K
             KeyCode::Char('H') => {
                 self.viewport.scroll_view_left();
             }
             KeyCode::Char('L') => {
                 self.viewport.scroll_view_right(self.data.total_cols());
+            }
+            KeyCode::Char('J') => {
+                self.viewport.scroll_view_down(self.data.total_rows());
+            }
+            KeyCode::Char('K') => {
+                self.viewport.scroll_view_up();
             }
 
             // Jump: g (first press of gg) / G (last row) / 0 (first col) / $ (last col)
@@ -556,32 +587,81 @@ mod tests {
     fn test_scroll_view_left_right() {
         let mut vp = Viewport::new();
         vp.visible_cols = 3;
+        vp.cursor_col = 5; // start cursor away from 0 so it can move
 
         vp.scroll_view_right(20);
         assert_eq!(vp.scroll_col, 1);
+        assert_eq!(vp.cursor_col, 6); // cursor moves with view
 
         vp.scroll_view_left();
         assert_eq!(vp.scroll_col, 0);
+        assert_eq!(vp.cursor_col, 5); // cursor moves back
 
         // Can't scroll left past 0.
+        vp.cursor_col = 0;
+        vp.scroll_col = 0;
         vp.scroll_view_left();
         assert_eq!(vp.scroll_col, 0);
+        assert_eq!(vp.cursor_col, 0);
 
         // Scroll to the rightmost position.
+        vp.cursor_col = 5;
+        vp.scroll_col = 0;
         for _ in 0..30 {
             vp.scroll_view_right(20);
         }
         assert_eq!(vp.scroll_col, 17); // 20 - 3
+        assert_eq!(vp.cursor_col, 19); // clamped at last col
     }
 
     #[test]
-    fn test_h_l_do_not_move_cursor() {
+    fn test_scroll_view_up_down() {
+        let mut vp = Viewport::new();
+        vp.visible_rows = 5;
+        vp.cursor_row = 10;
+
+        vp.scroll_view_down(100);
+        assert_eq!(vp.scroll_row, 1);
+        assert_eq!(vp.cursor_row, 11); // cursor moves with view
+
+        vp.scroll_view_up();
+        assert_eq!(vp.scroll_row, 0);
+        assert_eq!(vp.cursor_row, 10); // cursor moves back
+
+        // Can't scroll up past 0.
+        vp.cursor_row = 0;
+        vp.scroll_row = 0;
+        vp.scroll_view_up();
+        assert_eq!(vp.scroll_row, 0);
+        assert_eq!(vp.cursor_row, 0);
+
+        // Scroll to bottom.
+        vp.cursor_row = 10;
+        vp.scroll_row = 0;
+        for _ in 0..200 {
+            vp.scroll_view_down(100);
+        }
+        assert_eq!(vp.scroll_row, 95); // 100 - 5
+        assert_eq!(vp.cursor_row, 99); // clamped at last row
+    }
+
+    #[test]
+    fn test_hjkl_scroll_moves_cursor_with_view() {
+        // Cursor stays at the same relative screen position when scrolling.
         let mut vp = Viewport::new();
         vp.cursor_col = 5;
-        vp.visible_cols = 3;
+        vp.scroll_col = 3;
+        vp.visible_cols = 5;
+
+        // Cursor at relative screen col 2 (5 - 3).
         vp.scroll_view_right(20);
-        assert_eq!(vp.scroll_col, 1);
-        assert_eq!(vp.cursor_col, 5); // cursor unchanged
+        // scroll_col=4, cursor_col=6 → relative screen col still 2.
+        assert_eq!(vp.scroll_col, 4);
+        assert_eq!(vp.cursor_col, 6);
+
+        vp.scroll_view_left();
+        assert_eq!(vp.scroll_col, 3);
+        assert_eq!(vp.cursor_col, 5);
     }
 
     // -------------------------------------------------------------------
@@ -736,15 +816,32 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_key_h_l_scroll() {
-        let mut app = make_app(10, 20);
+    fn test_handle_key_hjkl_scroll_view() {
+        let mut app = make_app(30, 20);
         app.viewport.visible_cols = 3;
+        app.viewport.visible_rows = 5;
+        app.viewport.cursor_row = 10;
+        app.viewport.cursor_col = 10;
 
+        // L scrolls view right, cursor follows
         app.handle_key(press('L'));
         assert_eq!(app.viewport.scroll_col, 1);
+        assert_eq!(app.viewport.cursor_col, 11);
 
+        // H scrolls view left, cursor follows back
         app.handle_key(press('H'));
         assert_eq!(app.viewport.scroll_col, 0);
+        assert_eq!(app.viewport.cursor_col, 10);
+
+        // J scrolls view down, cursor follows
+        app.handle_key(press('J'));
+        assert_eq!(app.viewport.scroll_row, 1);
+        assert_eq!(app.viewport.cursor_row, 11);
+
+        // K scrolls view up, cursor follows back
+        app.handle_key(press('K'));
+        assert_eq!(app.viewport.scroll_row, 0);
+        assert_eq!(app.viewport.cursor_row, 10);
     }
 
     #[test]
