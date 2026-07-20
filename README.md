@@ -4,6 +4,12 @@ A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and
 
 ![version](https://img.shields.io/badge/version-0.1.0-blue)
 
+## Screenshots
+
+| Table view | Help screen |
+|---|---|
+| ![table view](images/table.png) | ![help screen](images/help.png) |
+
 ## Features
 
 - **Zero-config** — open `.csv`, `.tsv`, `.xls`, `.xlsx`, `.parquet` files instantly
