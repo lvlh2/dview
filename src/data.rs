@@ -163,11 +163,104 @@ fn cell_to_string(cell: &Data) -> String {
         }
         Data::Int(i) => i.to_string(),
         Data::Bool(b) => b.to_string(),
-        Data::DateTime(d) => d.to_string(),
+        Data::DateTime(d) => {
+            let val = d.as_f64();
+            if d.is_duration() {
+                // Duration like [hh]:mm:ss — format as hours:minutes:seconds.
+                let total_secs = (val * 86400.0).round() as i64;
+                let h = total_secs / 3600;
+                let m = (total_secs % 3600) / 60;
+                let s = total_secs % 60;
+                format!("{}:{:02}:{:02}", h, m, s)
+            } else {
+                excel_serial_to_date(val)
+            }
+        }
         Data::DateTimeIso(d) => d.clone(),
         Data::DurationIso(d) => d.clone(),
         Data::Error(e) => format!("#ERROR: {}", e),
     }
+}
+
+/// Convert an Excel serial date number to a YYYY-MM-DD string.
+///
+/// Excel date system (1900 date system):
+///   - Serial 0   = Jan 0, 1900 (virtual) = 1899-12-31
+///   - Serial 1   = Jan 1, 1900
+///   - Serial 60  = Feb 29, 1900 (fictional — Excel treats 1900 as a leap year
+///     for Lotus 1-2-3 compatibility)
+///   - Serial 61+ = Mar 1, 1900 onward, but one day ahead of reality
+///
+/// The adjustment: for serial >= 61, subtract 1 to skip the nonexistent Feb 29.
+/// Then add the adjusted number of days to 1899-12-31.
+fn excel_serial_to_date(serial: f64) -> String {
+    let mut days = serial.floor() as i64;
+    if days <= 0 {
+        return format!("{}", serial);
+    }
+    // Show the fictional Feb 29, 1900 as-is (Excel compatibility).
+    if days == 60 {
+        return "1900-02-29".to_string();
+    }
+    // After the fictional leap day, the count is off by one.
+    if days > 60 {
+        days -= 1;
+    }
+    days_to_ymd(days)
+}
+
+/// Convert days since 1899-12-31 to a YYYY-MM-DD string.
+/// Simple day-by-day increment — fast enough for any practical Excel date.
+fn days_to_ymd(days: i64) -> String {
+    const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    // Start at the Excel epoch: 1899-12-31 (day 0).
+    let mut y: i64 = 1899;
+    let mut m: i64 = 12;
+    let mut d: i64 = 31;
+
+    // Forward from epoch.
+    if days >= 0 {
+        for _ in 0..days {
+            let mdays = if m == 2 {
+                if is_leap(y) { 29 } else { 28 }
+            } else {
+                MONTH_DAYS[(m - 1) as usize]
+            };
+            d += 1;
+            if d > mdays {
+                d = 1;
+                m += 1;
+                if m > 12 {
+                    m = 1;
+                    y += 1;
+                }
+            }
+        }
+    } else {
+        // Backward from epoch (negative days — shouldn't happen in practice).
+        for _ in 0..(-days) {
+            d -= 1;
+            if d < 1 {
+                m -= 1;
+                if m < 1 {
+                    m = 12;
+                    y -= 1;
+                }
+                d = if m == 2 {
+                    if is_leap(y) { 29 } else { 28 }
+                } else {
+                    MONTH_DAYS[(m - 1) as usize]
+                };
+            }
+        }
+    }
+
+    format!("{}-{:02}-{:02}", y, m, d)
+}
+
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +488,23 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn test_excel_serial_date_conversion() {
+        // 1900 date system (no leap year bug adjustment needed for serials <= 60).
+        assert_eq!(excel_serial_to_date(1.0), "1900-01-01");
+        assert_eq!(excel_serial_to_date(59.0), "1900-02-28");
+        assert_eq!(excel_serial_to_date(60.0), "1900-02-29"); // fictional leap day
+        assert_eq!(excel_serial_to_date(61.0), "1900-03-01");
+        // Anchor: Jan 1, 2000 = serial 36526.
+        assert_eq!(excel_serial_to_date(36526.0), "2000-01-01");
+        // Serial 42380 = Jan 11, 2016.
+        assert_eq!(excel_serial_to_date(42380.0), "2016-01-11");
+        // Date with time component (fractional part ignored).
+        assert_eq!(excel_serial_to_date(42380.5), "2016-01-11");
+        // Edge: zero or negative returns raw.
+        assert_eq!(excel_serial_to_date(0.0), "0");
+    }
+
+    #[test]
     fn test_unsupported_extension() {
         let path = write_temp("json", "{}");
         let err = load_file(&path).unwrap_err();
@@ -412,6 +522,29 @@ mod tests {
         assert_eq!(table.total_rows(), 0);
         assert_eq!(table.total_cols(), 0);
         assert!(table.column_widths.is_empty());
+    }
+
+    fn dt(f: f64) -> calamine::Data {
+        calamine::Data::DateTime(calamine::ExcelDateTime::new(
+            f,
+            calamine::ExcelDateTimeType::DateTime,
+            false,
+        ))
+    }
+    fn dt_iso(s: &str) -> calamine::Data {
+        calamine::Data::DateTimeIso(s.into())
+    }
+
+    #[test]
+    fn test_cell_to_string_datetime() {
+        // DateTime variant should produce a readable date string.
+        assert_eq!(cell_to_string(&dt(42380.0)), "2016-01-11");
+        assert_eq!(cell_to_string(&dt(36526.0)), "2000-01-01");
+        // DateTimeIso passes through unchanged.
+        assert_eq!(
+            cell_to_string(&dt_iso("2024-03-15T10:30:00")),
+            "2024-03-15T10:30:00"
+        );
     }
 
     #[test]
