@@ -1,6 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::colors::ColorPalette;
@@ -164,7 +165,7 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
             break;
         }
 
-        let bg = if data_row % 2 == 0 {
+        let bg = if data_row.is_multiple_of(2) {
             palette.row_bg_even
         } else {
             palette.row_bg_odd
@@ -186,7 +187,11 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
             buf,
             layout.row_num_x,
             screen_y,
-            &format!("{:>width$}", data_row + 1, width = layout.row_num_w as usize),
+            &format!(
+                "{:>width$}",
+                data_row + 1,
+                width = layout.row_num_w as usize
+            ),
             rn_style,
         );
 
@@ -268,9 +273,7 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
     }
 
     // "[  sheet1  |  sheet2  |  sheet3  ]"
-    let active_style = Style::new()
-        .fg(palette.cursor_fg)
-        .bg(palette.cursor_bg);
+    let active_style = Style::new().fg(palette.cursor_fg).bg(palette.cursor_bg);
     let inactive_style = Style::new().fg(palette.header_fg).bg(palette.header_bg);
     let bracket_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
     let sep_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
@@ -297,11 +300,12 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
         // Pad the tab name.
         let label = format!(" {} ", name);
         for ch in label.chars() {
-            if cx + 1 >= rect_right(area) {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            if cx + cw > rect_right(area) {
                 break;
             }
             buf[(cx, y)].set_char(ch).set_style(style);
-            cx += 1;
+            cx += cw;
         }
     }
 
@@ -441,7 +445,10 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
             // Key label — right-aligned within label_width.
             let label_style = Style::new().fg(palette.column_color(0)).bg(bg);
             let padding = label_width as usize - label.len();
-            for (i, ch) in format!("{:>width$}", label, width = label.len() + padding).chars().enumerate() {
+            for (i, ch) in format!("{:>width$}", label, width = label.len() + padding)
+                .chars()
+                .enumerate()
+            {
                 let cx = content_x + i as u16;
                 if cx < ox + box_w - 1 {
                     buf[(cx, y)].set_char(ch).set_style(label_style);
@@ -478,7 +485,6 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
 /// Place a string at (x, y). Does NOT fill past the text — caller should fill
 /// row background separately.
 fn put_text(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style) {
-    use unicode_width::UnicodeWidthChar;
     let mut cx = x;
     for ch in text.chars() {
         let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;

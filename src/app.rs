@@ -52,7 +52,7 @@ impl Viewport {
         } else {
             (total_rows as f64).log10() as usize + 1
         };
-        self.row_num_width = (digits + 1).max(3).min(8) as u16;
+        self.row_num_width = (digits + 1).clamp(3, 8) as u16;
 
         // Only header row takes vertical space; rest are data rows.
         self.visible_rows = available_height.saturating_sub(1) as usize;
@@ -125,7 +125,8 @@ impl Viewport {
     pub fn page_down(&mut self, total_rows: usize) {
         let delta = self.visible_rows.max(1);
         self.cursor_row = (self.cursor_row + delta).min(total_rows.saturating_sub(1));
-        self.scroll_row = (self.scroll_row + delta).min(total_rows.saturating_sub(self.visible_rows));
+        self.scroll_row =
+            (self.scroll_row + delta).min(total_rows.saturating_sub(self.visible_rows));
         self.ensure_row_visible();
     }
 
@@ -199,9 +200,7 @@ impl Viewport {
         if self.cursor_row < self.scroll_row {
             self.scroll_row = self.cursor_row;
         }
-        if self.visible_rows > 0
-            && self.cursor_row >= self.scroll_row + self.visible_rows
-        {
+        if self.visible_rows > 0 && self.cursor_row >= self.scroll_row + self.visible_rows {
             self.scroll_row = self.cursor_row - self.visible_rows + 1;
         }
     }
@@ -210,9 +209,7 @@ impl Viewport {
         if self.cursor_col < self.scroll_col {
             self.scroll_col = self.cursor_col;
         }
-        if self.visible_cols > 0
-            && self.cursor_col >= self.scroll_col + self.visible_cols
-        {
+        if self.visible_cols > 0 && self.cursor_col >= self.scroll_col + self.visible_cols {
             self.scroll_col = self.cursor_col - self.visible_cols + 1;
         }
     }
@@ -234,7 +231,6 @@ pub struct App {
 
 impl App {
     pub fn new(sheets: Vec<(String, DataTable)>) -> Self {
-        let has_sheets = !sheets.is_empty();
         let data = sheets.first().map(|(_, t)| t);
         let status = if let Some(d) = data {
             format!(
@@ -247,7 +243,7 @@ impl App {
         };
         Self {
             sheets,
-            active_sheet: if has_sheets { 0 } else { 0 },
+            active_sheet: 0,
             viewport: Viewport::new(),
             palette: ColorPalette::default(),
             running: false,
@@ -281,19 +277,21 @@ impl App {
         );
     }
 
-    pub fn run(&mut self, terminal: &mut Terminal<impl ratatui::backend::Backend>) -> anyhow::Result<()> {
+    pub fn run(
+        &mut self,
+        terminal: &mut Terminal<impl ratatui::backend::Backend>,
+    ) -> anyhow::Result<()> {
         self.running = true;
         while self.running {
             terminal
                 .draw(|frame| ui::render(frame, self))
                 .map_err(|e| anyhow::anyhow!("Draw error: {:?}", e))?;
 
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key);
-                    }
-                }
+            if event::poll(Duration::from_millis(50))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                self.handle_key(key);
             }
         }
         Ok(())

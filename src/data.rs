@@ -55,10 +55,7 @@ pub fn load_file(path: &Path) -> Result<Vec<(String, DataTable)>> {
         .unwrap_or("")
         .to_lowercase();
 
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("data");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("data");
 
     match ext.as_str() {
         "csv" => Ok(vec![(stem.to_string(), load_csv(path, b',')?)]),
@@ -82,11 +79,7 @@ fn load_csv(path: &Path, delimiter: u8) -> Result<DataTable> {
         .has_headers(true)
         .from_path(path)?;
 
-    let headers: Vec<String> = rdr
-        .headers()?
-        .iter()
-        .map(|h| h.to_string())
-        .collect();
+    let headers: Vec<String> = rdr.headers()?.iter().map(|h| h.to_string()).collect();
 
     let mut rows = Vec::new();
     for result in rdr.records() {
@@ -105,7 +98,7 @@ fn load_csv(path: &Path, delimiter: u8) -> Result<DataTable> {
 // ---------------------------------------------------------------------------
 
 fn load_excel(path: &Path) -> Result<Vec<(String, DataTable)>> {
-    use calamine::{open_workbook_auto, Reader};
+    use calamine::{Reader, open_workbook_auto};
 
     let mut workbook = open_workbook_auto(path)?;
     let sheet_names = workbook.sheet_names().to_vec();
@@ -121,7 +114,7 @@ fn load_excel(path: &Path) -> Result<Vec<(String, DataTable)>> {
 
         // First row = headers
         let headers: Vec<String> = match rows_iter.next() {
-            Some(hdr) => hdr.iter().map(|c| cell_to_string(c)).collect(),
+            Some(hdr) => hdr.iter().map(cell_to_string).collect(),
             None => {
                 sheets.push((name.clone(), DataTable::new(vec![], vec![])));
                 continue;
@@ -427,8 +420,10 @@ mod tests {
 
     #[test]
     fn test_csv_quoted_fields() {
-        let path =
-            write_temp("csv", "Name,Note\nAlice,\"hello, world\"\nBob,\"say \"\"hi\"\"\"\n");
+        let path = write_temp(
+            "csv",
+            "Name,Note\nAlice,\"hello, world\"\nBob,\"say \"\"hi\"\"\"\n",
+        );
         let sheets = load_file(&path).unwrap();
         let table = &sheets[0].1;
         assert_eq!(table.rows[0][1], "hello, world");

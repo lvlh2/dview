@@ -2,7 +2,7 @@
 
 A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and Parquet files directly in your terminal.
 
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-0.1.1-blue)
 
 ## Screenshots
 
@@ -20,11 +20,26 @@ A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and
 
 ## Installation
 
+### Download from Releases
+
+1. Go to the [Releases](https://github.com/lvlh2/dview/releases) page
+2. Download `dview.exe` from the latest release
+3. Add the folder containing `dview.exe` to your `PATH` environment variable
+4. Open a new terminal and run:
+
 ```bash
-cargo install --path .
+dview data.csv
 ```
 
+### Build from Source
+
 Requires Rust 1.82+ (edition 2024).
+
+```bash
+git clone https://github.com/lvlh2/dview.git
+cd dview
+cargo install --path .
+```
 
 ## Usage
 
