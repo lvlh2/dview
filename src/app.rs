@@ -258,6 +258,11 @@ impl App {
         &self.sheets[self.active_sheet].1
     }
 
+    /// Mutable reference to the currently active data table.
+    pub fn data_mut(&mut self) -> &mut DataTable {
+        &mut self.sheets[self.active_sheet].1
+    }
+
     fn sheet_count(&self) -> usize {
         self.sheets.len()
     }
@@ -283,6 +288,13 @@ impl App {
     ) -> anyhow::Result<()> {
         self.running = true;
         while self.running {
+            // Prefetch visible rows before rendering (no-op for InMemory).
+            if !self.show_help {
+                let start = self.viewport.scroll_row;
+                let count = self.viewport.visible_rows.max(1);
+                self.data_mut().prefetch_range(start, count);
+            }
+
             terminal
                 .draw(|frame| ui::render(frame, self))
                 .map_err(|e| anyhow::anyhow!("Draw error: {:?}", e))?;

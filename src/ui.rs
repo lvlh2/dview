@@ -5,6 +5,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::colors::ColorPalette;
+use crate::data::DataTable;
 
 /// Number of spaces between adjacent columns.
 const COL_GAP: u16 = 3;
@@ -19,11 +20,10 @@ fn rect_bottom(area: Rect) -> u16 {
 /// Render one frame.
 pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
-    let palette = &app.palette;
     let buf = frame.buffer_mut();
 
     if app.show_help {
-        render_help_screen(buf, area, palette);
+        render_help_screen(buf, area, &app.palette);
         return;
     }
 
@@ -36,7 +36,8 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         area.height.saturating_sub(status_height + tab_bar_height),
     );
 
-    // Use inline field access so Rust can split borrows (app.sheets vs app.viewport).
+    // Use inline field access for borrow splitting: recalc_dimensions needs
+    // &mut viewport, while column_widths/total_rows need &DataTable.
     let active_data = &app.sheets[app.active_sheet].1;
     app.viewport.recalc_dimensions(
         table_area.width,
@@ -48,21 +49,27 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     // Fill entire background.
     for y in table_area.y..rect_bottom(table_area) {
         for x in table_area.x..rect_right(table_area) {
-            buf[(x, y)].set_char(' ').set_bg(palette.bg);
+            buf[(x, y)].set_char(' ').set_bg(app.palette.bg);
         }
     }
 
-    if app.data().total_rows() > 0 || app.data().total_cols() > 0 {
-        render_table(buf, table_area, app, palette);
+    if active_data.total_rows() > 0 || active_data.total_cols() > 0 {
+        render_table(
+            buf,
+            table_area,
+            &app.viewport,
+            &mut app.sheets[app.active_sheet].1,
+            &app.palette,
+        );
     }
 
-    // Tab bar (multi-sheet Excel only).
+    // Tab bar (multi-sheet only).
     if tab_bar_height > 0 {
         let tab_y = rect_bottom(table_area);
-        render_tab_bar(buf, area, tab_y, app, palette);
+        render_tab_bar(buf, area, tab_y, app, &app.palette);
     }
 
-    render_status_bar(buf, area, app, palette);
+    render_status_bar(buf, area, app, &app.palette);
 }
 
 // ---------------------------------------------------------------------------
@@ -81,35 +88,38 @@ struct ColLayout {
     visible_rows: usize,
 }
 
-fn compute_layout(area: Rect, app: &App) -> ColLayout {
-    let vp = &app.viewport;
-    let total_cols = app.data().total_cols();
-
-    let vis_cols: Vec<usize> =
-        (vp.scroll_col..total_cols.min(vp.scroll_col + vp.visible_cols)).collect();
+fn compute_layout(
+    area: Rect,
+    scroll_col: usize,
+    visible_cols: usize,
+    row_num_width: u16,
+    total_cols: usize,
+    column_widths: &[usize],
+) -> ColLayout {
+    let vis_cols: Vec<usize> = (scroll_col..total_cols.min(scroll_col + visible_cols)).collect();
 
     // Row number position.
     let row_num_x = area.x + 1;
-    let row_num_w = vp.row_num_width.max(3);
+    let row_num_w = row_num_width.max(3);
 
     // Data column positions.
     let mut xs: Vec<u16> = Vec::with_capacity(vis_cols.len());
     let mut x = row_num_x + row_num_w + COL_GAP;
     for &ci in &vis_cols {
-        if x + app.data().column_widths.get(ci).copied().unwrap_or(4) as u16 > rect_right(area) {
+        let cw = column_widths.get(ci).copied().unwrap_or(4) as u16;
+        if x + cw > rect_right(area) {
             break;
         }
         xs.push(x);
-        x += app.data().column_widths.get(ci).copied().unwrap_or(4) as u16 + COL_GAP;
+        x += cw + COL_GAP;
     }
 
     let visible_rows = (rect_bottom(area).saturating_sub(area.y + 1)) as usize;
 
-    let vis_cols = vis_cols[..xs.len()].to_vec(); // trim to what fits
-
+    let ncols = xs.len();
     ColLayout {
         xs,
-        vis_cols,
+        vis_cols: vis_cols[..ncols].to_vec(),
         row_num_x,
         row_num_w,
         visible_rows,
@@ -120,13 +130,29 @@ fn compute_layout(area: Rect, app: &App) -> ColLayout {
 // Table rendering
 // ---------------------------------------------------------------------------
 
-fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette) {
-    let layout = compute_layout(area, app);
-    let vp = &app.viewport;
+fn render_table(
+    buf: &mut Buffer,
+    area: Rect,
+    vp: &crate::app::Viewport,
+    data: &mut DataTable,
+    palette: &ColorPalette,
+) {
+    let layout = compute_layout(
+        area,
+        vp.scroll_col,
+        vp.visible_cols,
+        vp.row_num_width,
+        data.total_cols(),
+        &data.column_widths,
+    );
+
+    // Extract values we need repeatedly to avoid borrowing issues.
+    let total_rows = data.total_rows();
+    let cursor_row = vp.cursor_row;
+    let cursor_col = vp.cursor_col;
 
     // --- Header row ---
     let hdr_y = area.y;
-    // Fill header background across the full width.
     for y_off in 0..1u16 {
         for xi in area.x..rect_right(area) {
             buf[(xi, hdr_y + y_off)]
@@ -148,12 +174,21 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
     for (vi, &ci) in layout.vis_cols.iter().enumerate() {
         let col_fg = palette.column_color(ci);
         let style = Style::new().fg(col_fg).bg(palette.header_bg);
-        let text = &app.data().headers[ci];
+        let text = &data.headers[ci];
         put_text(buf, layout.xs[vi], hdr_y, text, style);
     }
 
     // --- Data rows ---
     let data_start_y = area.y + 1;
+
+    // Extract visible column widths ahead of time to avoid borrowing
+    // `data` immutably while `get_row()`'s mutable borrow result is live.
+    let vis_col_widths: Vec<u16> = layout
+        .vis_cols
+        .iter()
+        .map(|&ci| data.column_widths.get(ci).copied().unwrap_or(4) as u16)
+        .collect();
+
     for i in 0..layout.visible_rows {
         let data_row = vp.scroll_row + i;
         let screen_y = data_start_y + i as u16;
@@ -161,7 +196,7 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
         if screen_y >= rect_bottom(area) {
             break;
         }
-        if data_row >= app.data().total_rows() {
+        if data_row >= total_rows {
             break;
         }
 
@@ -170,7 +205,7 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
         } else {
             palette.row_bg_odd
         };
-        let is_cursor_row = data_row == vp.cursor_row;
+        let is_cursor_row = data_row == cursor_row;
 
         // Fill row background.
         for xi in area.x..rect_right(area) {
@@ -195,12 +230,14 @@ fn render_table(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPalette)
             rn_style,
         );
 
-        // Data cells.
-        let row = &app.data().rows[data_row];
+        // Data cells.  get_row() borrows data mutably, but the borrow is
+        // temporary — after the call, `row` holds a shared reference into
+        // DataTable's internal cache, and we can freely read `data` again.
+        let row = data.get_row(data_row);
         for (vi, &ci) in layout.vis_cols.iter().enumerate() {
             let col_fg = palette.column_color(ci);
-            let is_cursor_cell = is_cursor_row && ci == vp.cursor_col;
-            let col_w = app.data().column_widths.get(ci).copied().unwrap_or(4) as u16;
+            let is_cursor_cell = is_cursor_row && ci == cursor_col;
+            let col_w = vis_col_widths[vi];
 
             let cell_style = if is_cursor_cell {
                 Style::new().fg(palette.cursor_fg).bg(palette.cursor_bg)
@@ -263,31 +300,28 @@ fn render_status_bar(buf: &mut Buffer, area: Rect, app: &App, palette: &ColorPal
 }
 
 // ---------------------------------------------------------------------------
-// Tab bar (multi-sheet Excel)
+// Tab bar (multi-sheet)
 // ---------------------------------------------------------------------------
 
 fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &ColorPalette) {
-    // Fill background.
     for x in area.x..rect_right(area) {
         buf[(x, y)].set_char(' ').set_bg(palette.header_bg);
     }
 
-    // "[  sheet1  |  sheet2  |  sheet3  ]"
     let active_style = Style::new().fg(palette.cursor_fg).bg(palette.cursor_bg);
     let inactive_style = Style::new().fg(palette.header_fg).bg(palette.header_bg);
     let bracket_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
     let sep_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
 
-    let mut cx = area.x + 2; // left margin
+    let mut cx = area.x + 2;
 
     // Left bracket.
     buf[(cx, y)].set_char('[').set_style(bracket_style);
     cx += 1;
 
     for (i, (name, _)) in app.sheets.iter().enumerate() {
-        // Separator between tabs.
         if i > 0 {
-            buf[(cx, y)].set_char('│').set_style(sep_style);
+            buf[(cx, y)].set_char('\u{2502}').set_style(sep_style);
             cx += 1;
         }
 
@@ -297,7 +331,6 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
             inactive_style
         };
 
-        // Pad the tab name.
         let label = format!(" {} ", name);
         for ch in label.chars() {
             let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
@@ -309,7 +342,6 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
         }
     }
 
-    // Right bracket.
     if cx < rect_right(area) {
         buf[(cx, y)].set_char(']').set_style(bracket_style);
     }
@@ -320,7 +352,6 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
 // ---------------------------------------------------------------------------
 
 fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
-    // Fill background.
     for y in area.y..rect_bottom(area) {
         for x in area.x..rect_right(area) {
             buf[(x, y)].set_char(' ').set_bg(palette.header_bg);
@@ -330,7 +361,6 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
     let fg = palette.header_fg;
     let bg = palette.header_bg;
 
-    // Help content: (label, description) pairs.  A label of "" is a section header.
     let lines: &[(&str, &str)] = &[
         ("", "Navigation"),
         ("h / Left", "Move cursor left one column"),
@@ -369,14 +399,12 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
 
     let footer = " Press Esc or ? to close help ";
 
-    // Box dimensions.
     let label_width: u16 = 18;
     let gap: u16 = 3;
-    let content_width: u16 = label_width + gap + 36; // 36 for description
+    let content_width: u16 = label_width + gap + 36;
     let inner_w: u16 = content_width;
-    let inner_h: u16 = lines.len() as u16 + 3; // +2 blank rows + footer
+    let inner_h: u16 = lines.len() as u16 + 3;
 
-    // Clamp to terminal.
     let box_w = (inner_w + 2).min(area.width.saturating_sub(2));
     let box_h = (inner_h + 2).min(area.height.saturating_sub(2));
     let ox = area.x + (area.width.saturating_sub(box_w)) / 2;
@@ -385,25 +413,28 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
     let style = Style::new().fg(fg).bg(bg);
 
     // Draw border.
-    // Top edge.
-    buf[(ox, oy)].set_char('┌').set_style(style);
+    buf[(ox, oy)].set_char('\u{250c}').set_style(style);
     for x in ox + 1..ox + box_w - 1 {
-        buf[(x, oy)].set_char('─').set_style(style);
+        buf[(x, oy)].set_char('\u{2500}').set_style(style);
     }
-    buf[(ox + box_w - 1, oy)].set_char('┐').set_style(style);
+    buf[(ox + box_w - 1, oy)]
+        .set_char('\u{2510}')
+        .set_style(style);
 
-    // Bottom edge.
     let by = oy + box_h - 1;
-    buf[(ox, by)].set_char('└').set_style(style);
+    buf[(ox, by)].set_char('\u{2514}').set_style(style);
     for x in ox + 1..ox + box_w - 1 {
-        buf[(x, by)].set_char('─').set_style(style);
+        buf[(x, by)].set_char('\u{2500}').set_style(style);
     }
-    buf[(ox + box_w - 1, by)].set_char('┘').set_style(style);
+    buf[(ox + box_w - 1, by)]
+        .set_char('\u{2518}')
+        .set_style(style);
 
-    // Side edges.
     for y in oy + 1..by {
-        buf[(ox, y)].set_char('│').set_style(style);
-        buf[(ox + box_w - 1, y)].set_char('│').set_style(style);
+        buf[(ox, y)].set_char('\u{2502}').set_style(style);
+        buf[(ox + box_w - 1, y)]
+            .set_char('\u{2502}')
+            .set_style(style);
     }
 
     // Title.
@@ -428,12 +459,10 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
         }
 
         if label.is_empty() && desc.is_empty() {
-            // Blank separator line.
             continue;
         }
 
         if label.is_empty() {
-            // Section header.
             let hdr_style = Style::new().fg(palette.row_num_fg).bg(bg);
             for (i, ch) in desc.chars().enumerate() {
                 let cx = content_x + i as u16;
@@ -442,7 +471,6 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
                 }
             }
         } else {
-            // Key label — right-aligned within label_width.
             let label_style = Style::new().fg(palette.column_color(0)).bg(bg);
             let padding = label_width as usize - label.len();
             for (i, ch) in format!("{:>width$}", label, width = label.len() + padding)
@@ -454,7 +482,6 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
                     buf[(cx, y)].set_char(ch).set_style(label_style);
                 }
             }
-            // Description.
             let desc_style = Style::new().fg(fg).bg(bg);
             for (i, ch) in desc.chars().enumerate() {
                 let cx = desc_x + i as u16;
