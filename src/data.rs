@@ -185,7 +185,7 @@ impl CsvBackend {
             offsets.push(rdr.position().byte());
 
             // Track widths from sampled rows only.
-            if sample_interval == 1 || row_count % sample_interval == 0 {
+            if sample_interval == 1 || row_count.is_multiple_of(sample_interval) {
                 for (i, field) in record.iter().enumerate() {
                     if i < num_cols {
                         let s = std::str::from_utf8(field).unwrap_or("");
@@ -270,13 +270,11 @@ impl CsvBackend {
             .from_reader(&buf[..]);
 
         let mut rows: Vec<Vec<String>> = Vec::with_capacity(end - start);
-        for result in rdr.records() {
-            if let Ok(record) = result {
-                let row: Vec<String> = (0..record.len())
-                    .map(|i| record.get(i).unwrap_or("").to_string())
-                    .collect();
-                rows.push(row);
-            }
+        for record in rdr.records().flatten() {
+            let row: Vec<String> = (0..record.len())
+                .map(|i| record.get(i).unwrap_or("").to_string())
+                .collect();
+            rows.push(row);
         }
 
         self.cache_start = start;
@@ -558,7 +556,140 @@ fn arrow_value_to_str(arr: &dyn arrow::array::Array, idx: usize) -> String {
     downcast!(LargeStringArray, arr, idx);
     downcast!(BooleanArray, arr, idx);
 
+    // --- Date types ---
+
+    if let Some(a) = arr.as_any().downcast_ref::<Date32Array>() {
+        return unix_days_to_date(a.value(idx) as i64);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<Date64Array>() {
+        let ms = a.value(idx);
+        let days = ms.div_euclid(86_400_000);
+        return unix_days_to_date(days);
+    }
+
+    // --- Timestamp types ---
+
+    if let Some(a) = arr.as_any().downcast_ref::<TimestampSecondArray>() {
+        let v = a.value(idx);
+        let days = v.div_euclid(86400);
+        let sec_of_day = v.rem_euclid(86400);
+        let hh = sec_of_day / 3600;
+        let mm = (sec_of_day % 3600) / 60;
+        let ss = sec_of_day % 60;
+        return format!("{} {:02}:{:02}:{:02}", unix_days_to_date(days), hh, mm, ss);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<TimestampMillisecondArray>() {
+        let v = a.value(idx);
+        let days = v.div_euclid(86_400_000);
+        let ms_of_day = v.rem_euclid(86_400_000);
+        let hh = ms_of_day / 3_600_000;
+        let mm = (ms_of_day % 3_600_000) / 60_000;
+        let ss = (ms_of_day % 60_000) as f64 / 1000.0;
+        return format!(
+            "{} {:02}:{:02}:{:06.3}",
+            unix_days_to_date(days),
+            hh,
+            mm,
+            ss
+        );
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+        let v = a.value(idx);
+        let days = v.div_euclid(86_400_000_000);
+        let us_of_day = v.rem_euclid(86_400_000_000);
+        let hh = us_of_day / 3_600_000_000;
+        let mm = (us_of_day % 3_600_000_000) / 60_000_000;
+        let ss = (us_of_day % 60_000_000) as f64 / 1_000_000.0;
+        return format!(
+            "{} {:02}:{:02}:{:09.6}",
+            unix_days_to_date(days),
+            hh,
+            mm,
+            ss
+        );
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
+        let v = a.value(idx);
+        let days = v.div_euclid(86_400_000_000_000);
+        let ns_of_day = v.rem_euclid(86_400_000_000_000);
+        let hh = ns_of_day / 3_600_000_000_000;
+        let mm = (ns_of_day % 3_600_000_000_000) / 60_000_000_000;
+        let ss = (ns_of_day % 60_000_000_000) as f64 / 1_000_000_000.0;
+        return format!(
+            "{} {:02}:{:02}:{:012.9}",
+            unix_days_to_date(days),
+            hh,
+            mm,
+            ss
+        );
+    }
+    // Time types (time-of-day, no date component)
+    if let Some(a) = arr.as_any().downcast_ref::<Time32SecondArray>() {
+        let v = a.value(idx);
+        let hh = v / 3600;
+        let mm = (v % 3600) / 60;
+        let ss = v % 60;
+        return format!("{:02}:{:02}:{:02}", hh, mm, ss);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<Time32MillisecondArray>() {
+        let v = a.value(idx);
+        let hh = v / 3_600_000;
+        let mm = (v % 3_600_000) / 60_000;
+        let ss = (v % 60_000) as f64 / 1000.0;
+        return format!("{:02}:{:02}:{:06.3}", hh, mm, ss);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<Time64MicrosecondArray>() {
+        let v = a.value(idx);
+        let hh = v / 3_600_000_000;
+        let mm = (v % 3_600_000_000) / 60_000_000;
+        let ss = (v % 60_000_000) as f64 / 1_000_000.0;
+        return format!("{:02}:{:02}:{:09.6}", hh, mm, ss);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<Time64NanosecondArray>() {
+        let v = a.value(idx);
+        let hh = v / 3_600_000_000_000;
+        let mm = (v % 3_600_000_000_000) / 60_000_000_000;
+        let ss = (v % 60_000_000_000) as f64 / 1_000_000_000.0;
+        return format!("{:02}:{:02}:{:012.9}", hh, mm, ss);
+    }
+
+    // Duration types — format as human-readable
+    if let Some(a) = arr.as_any().downcast_ref::<DurationSecondArray>() {
+        let v = a.value(idx);
+        return format!("{}s", v);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<DurationMillisecondArray>() {
+        let v = a.value(idx) as f64 / 1000.0;
+        return format!("{}s", v);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<DurationMicrosecondArray>() {
+        let v = a.value(idx) as f64 / 1_000_000.0;
+        return format!("{}s", v);
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<DurationNanosecondArray>() {
+        let v = a.value(idx) as f64 / 1_000_000_000.0;
+        return format!("{}s", v);
+    }
+
     String::new()
+}
+
+/// Convert days since UNIX epoch (1970-01-01) to a YYYY-MM-DD string.
+/// Uses Howard Hinnant's civil_from_days algorithm — correct for the full
+/// i64 range without any lookup tables.
+fn unix_days_to_date(days: i64) -> String {
+    // Shift epoch from 1970-01-01 to 0000-03-01.
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
 }
 
 // ---------------------------------------------------------------------------
@@ -914,6 +1045,74 @@ mod tests {
         let err = load_file(&path).unwrap_err();
         assert!(err.to_string().contains("Unsupported"));
         std::fs::remove_file(&path).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // UNIX days → date conversion (used for Parquet Date32/Date64)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unix_days_to_date_epoch() {
+        assert_eq!(unix_days_to_date(0), "1970-01-01");
+    }
+
+    #[test]
+    fn test_unix_days_to_date_known() {
+        assert_eq!(unix_days_to_date(10957), "2000-01-01"); // 2000-01-01
+        assert_eq!(unix_days_to_date(17167), "2017-01-01");
+        assert_eq!(unix_days_to_date(-1), "1969-12-31");
+        assert_eq!(unix_days_to_date(-719528), "0000-01-01"); // day before epoch 0000-03-01
+    }
+
+    #[test]
+    fn test_unix_days_to_date_leap_year() {
+        assert_eq!(unix_days_to_date(10957 + 59), "2000-02-29"); // 2000 leap year
+        assert_eq!(unix_days_to_date(10957 + 60), "2000-03-01");
+    }
+
+    #[test]
+    fn test_arrow_value_to_str_date32() {
+        use arrow::array::Date32Array;
+        use arrow::buffer::ScalarBuffer;
+        let values = ScalarBuffer::from(vec![0i32, 10957, -1]);
+        let dates = Date32Array::new(values, None); // no nulls
+        assert_eq!(arrow_value_to_str(&dates, 0), "1970-01-01");
+        assert_eq!(arrow_value_to_str(&dates, 1), "2000-01-01");
+        assert_eq!(arrow_value_to_str(&dates, 2), "1969-12-31");
+    }
+
+    #[test]
+    fn test_arrow_value_to_str_date32_null() {
+        use arrow::array::Date32Array;
+        use arrow::buffer::{NullBuffer, ScalarBuffer};
+        let values = ScalarBuffer::from(vec![0i32]);
+        let nulls = NullBuffer::new_null(1);
+        let dates = Date32Array::new(values, Some(nulls));
+        assert_eq!(arrow_value_to_str(&dates, 0), "");
+    }
+
+    #[test]
+    fn test_arrow_value_to_str_date64() {
+        use arrow::array::Date64Array;
+        use arrow::buffer::ScalarBuffer;
+        // Date64 stores milliseconds since epoch
+        let ms_per_day: i64 = 86_400_000;
+        let values = ScalarBuffer::from(vec![0i64, 10957 * ms_per_day, -ms_per_day]);
+        let dates = Date64Array::new(values, None);
+        assert_eq!(arrow_value_to_str(&dates, 0), "1970-01-01");
+        assert_eq!(arrow_value_to_str(&dates, 1), "2000-01-01");
+        assert_eq!(arrow_value_to_str(&dates, 2), "1969-12-31");
+    }
+
+    #[test]
+    fn test_arrow_value_to_str_timestamp_second() {
+        use arrow::array::TimestampSecondArray;
+        use arrow::buffer::ScalarBuffer;
+        // noon UTC on 2000-01-01
+        let values = ScalarBuffer::from(vec![0i64, 10957 * 86400 + 12 * 3600]);
+        let ts = TimestampSecondArray::new(values, None);
+        assert_eq!(arrow_value_to_str(&ts, 0), "1970-01-01 00:00:00");
+        assert_eq!(arrow_value_to_str(&ts, 1), "2000-01-01 12:00:00");
     }
 
     // -----------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and Parquet files directly in your terminal.
 
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.2.1-blue)
 
 ## Screenshots
 
@@ -51,29 +51,29 @@ dview export.parquet
 
 ### Keybindings
 
-| Keys | Action |
-|---|---|
-| `h` `j` `k` `l` / arrows | Move cursor |
+| Keys                           | Action                       |
+| ------------------------------ | ---------------------------- |
+| `h` `j` `k` `l` / arrows       | Move cursor                  |
 | `H` `J` `K` `L` / Shift+arrows | Scroll view (cursor follows) |
-| `Ctrl+F` `Ctrl+B` | Page down / up |
-| `gg` | Jump to first row |
-| `G` | Jump to last row |
-| `0` | Jump to first column |
-| `$` | Jump to last column |
-| `[` `]` | Previous / next sheet |
-| `?` | Help screen |
-| `q` `Esc` | Quit |
+| `Ctrl+F` `Ctrl+B`              | Page down / up               |
+| `gg`                           | Jump to first row            |
+| `G`                            | Jump to last row             |
+| `0`                            | Jump to first column         |
+| `$`                            | Jump to last column          |
+| `[` `]`                        | Previous / next sheet        |
+| `?`                            | Help screen                  |
+| `q` `Esc`                      | Quit                         |
 
 Press `?` at any time to see the full help screen.
 
 ## Supported Formats
 
-| Format | Extension |
-|---|---|
-| CSV | `.csv` |
-| TSV | `.tsv`, `.tab` |
-| Excel | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` |
-| Parquet | `.parquet`, `.pq` |
+| Format  | Extension                         |
+| ------- | --------------------------------- |
+| CSV     | `.csv`                            |
+| TSV     | `.tsv`, `.tab`                    |
+| Excel   | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` |
+| Parquet | `.parquet`, `.pq`                 |
 
 ## License
 
