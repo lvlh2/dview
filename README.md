@@ -2,7 +2,7 @@
 
 A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and Parquet files directly in your terminal.
 
-![version](https://img.shields.io/badge/version-0.2.1-blue)
+![version](https://img.shields.io/badge/version-0.2.2-blue)
 
 ## Screenshots
 

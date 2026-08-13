@@ -17,6 +17,83 @@ fn rect_bottom(area: Rect) -> u16 {
     area.y + area.height
 }
 
+fn tab_strip_visible_count(app: &App, area: Rect, start: usize) -> usize {
+    let right = rect_right(area);
+    let mut cx = area.x + 2;
+
+    // The leading `[` consumes one cell when it fits.
+    if cx < right {
+        cx += 1;
+    }
+
+    let mut count = 0usize;
+    for (i, (name, _)) in app.sheets.iter().enumerate().skip(start) {
+        if i > start {
+            if cx >= right {
+                break;
+            }
+            // `│` separator.
+            cx += 1;
+        }
+
+        if cx >= right {
+            break;
+        }
+
+        // A tab counts as visible once its first cell can be placed.
+        count += 1;
+
+        let label = format!(" {} ", name);
+        for ch in label.chars() {
+            if cx >= right {
+                break;
+            }
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            if cw == 0 {
+                continue;
+            }
+            if cx + cw > right {
+                break;
+            }
+            cx += cw;
+        }
+    }
+
+    count
+}
+
+fn ensure_tab_scroll(app: &mut App, area: Rect) {
+    let n = app.sheets.len();
+    if n <= 1 {
+        app.tab_scroll = 0;
+        return;
+    }
+
+    app.active_sheet = app.active_sheet.min(n - 1);
+    app.tab_scroll = app.tab_scroll.min(n - 1);
+
+    if app.active_sheet < app.tab_scroll {
+        app.tab_scroll = app.active_sheet;
+        return;
+    }
+
+    let is_visible =
+        |start: usize| app.active_sheet - start < tab_strip_visible_count(app, area, start).max(1);
+
+    if is_visible(app.tab_scroll) {
+        return;
+    }
+
+    // Slide the window forward as little as possible while keeping the active
+    // tab visible, preserving context on the left instead of jumping it to
+    // the first column.
+    let mut start = app.tab_scroll + 1;
+    while start < app.active_sheet && !is_visible(start) {
+        start += 1;
+    }
+    app.tab_scroll = start;
+}
+
 /// Render one frame.
 pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
@@ -66,6 +143,7 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     // Tab bar (multi-sheet only).
     if tab_bar_height > 0 {
         let tab_y = rect_bottom(table_area);
+        ensure_tab_scroll(app, area);
         render_tab_bar(buf, area, tab_y, app, &app.palette);
     }
 
@@ -313,14 +391,21 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
     let bracket_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
     let sep_style = Style::new().fg(palette.row_num_fg).bg(palette.header_bg);
 
+    let right = rect_right(area);
     let mut cx = area.x + 2;
 
     // Left bracket.
-    buf[(cx, y)].set_char('[').set_style(bracket_style);
-    cx += 1;
+    if cx < right {
+        buf[(cx, y)].set_char('[').set_style(bracket_style);
+        cx += 1;
+    }
 
-    for (i, (name, _)) in app.sheets.iter().enumerate() {
-        if i > 0 {
+    let start = app.tab_scroll.min(app.sheets.len().saturating_sub(1));
+    for (i, (name, _)) in app.sheets.iter().enumerate().skip(start) {
+        if i > start {
+            if cx >= right {
+                break;
+            }
             buf[(cx, y)].set_char('\u{2502}').set_style(sep_style);
             cx += 1;
         }
@@ -333,8 +418,14 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
 
         let label = format!(" {} ", name);
         for ch in label.chars() {
+            if cx >= right {
+                break;
+            }
             let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
-            if cx + cw > rect_right(area) {
+            if cw == 0 {
+                continue;
+            }
+            if cx + cw > right {
                 break;
             }
             buf[(cx, y)].set_char(ch).set_style(style);
@@ -342,7 +433,7 @@ fn render_tab_bar(buf: &mut Buffer, area: Rect, y: u16, app: &App, palette: &Col
         }
     }
 
-    if cx < rect_right(area) {
+    if cx < right {
         buf[(cx, y)].set_char(']').set_style(bracket_style);
     }
 }
@@ -512,13 +603,110 @@ fn render_help_screen(buf: &mut Buffer, area: Rect, palette: &ColorPalette) {
 /// Place a string at (x, y). Does NOT fill past the text — caller should fill
 /// row background separately.
 fn put_text(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style) {
+    let right = rect_right(*buf.area());
     let mut cx = x;
     for ch in text.chars() {
+        if cx >= right {
+            break;
+        }
         let cw = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
-        if cx + cw > rect_right(*buf.area()) {
+        if cw == 0 {
+            continue;
+        }
+        if cx + cw > right {
             break;
         }
         buf[(cx, y)].set_char(ch).set_style(style);
         cx += cw;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::data::DataTable;
+
+    fn app_with_sheets(names: &[&str]) -> App {
+        let sheets = names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    DataTable::new(vec!["col".into()], vec![vec!["value".into()]]),
+                )
+            })
+            .collect();
+        App::new(sheets)
+    }
+
+    #[test]
+    fn render_tab_bar_clips_long_cjk_sheet_names() {
+        let mut app = app_with_sheets(&[
+            "科技成长板块相关政策文件",
+            "科技成长板块成交额全市场占比",
+            "行业指数基本信息",
+            "科技成长板块行业指数净值走势",
+            "科技成长板块行业年度收益率排名变化",
+            "科技成长板块行业等权重组合年度最大回撤",
+            "策略组合与基准的净值",
+            "高集中度高估值组合持仓情况",
+            "策略组合与基准的评价指标",
+            "前两个主成分的吸收比率",
+            "总吸收比率与中证A500和科技50",
+            "吸收比率变化量与中证A500和科技50",
+            "策略组合择时前后的净值",
+            "策略组合择时前后的评价指标",
+            "指标排名参数的敏感性分析",
+            "择时阈值的敏感性分析表",
+            "择时阈值的敏感性分析图",
+        ]);
+
+        for width in [1u16, 2, 3, 179] {
+            let area = Rect::new(0, 0, width, 1);
+            ensure_tab_scroll(&mut app, area);
+            let mut buf = Buffer::empty(area);
+            render_tab_bar(&mut buf, area, 0, &app, &app.palette);
+        }
+    }
+
+    #[test]
+    fn render_tab_bar_follows_active_sheet() {
+        let mut app = app_with_sheets(&[
+            "科技成长板块相关政策文件",
+            "科技成长板块成交额全市场占比",
+            "行业指数基本信息",
+            "科技成长板块行业指数净值走势",
+            "科技成长板块行业年度收益率排名变化",
+            "科技成长板块行业等权重组合年度最大回撤",
+            "策略组合与基准的净值",
+            "高集中度高估值组合持仓情况",
+            "策略组合与基准的评价指标",
+            "前两个主成分的吸收比率",
+            "总吸收比率与中证A500和科技50",
+            "吸收比率变化量与中证A500和科技50",
+            "策略组合择时前后的净值",
+            "策略组合择时前后的评价指标",
+            "指标排名参数的敏感性分析",
+            "择时阈值的敏感性分析表",
+            "择时阈值的敏感性分析图",
+        ]);
+
+        // Moving forward beyond the current tab window should bring the
+        // active sheet into view by advancing tab_scroll.
+        app.active_sheet = 10;
+        app.tab_scroll = 0;
+        let area = Rect::new(0, 0, 179, 1);
+        ensure_tab_scroll(&mut app, area);
+        assert!(app.active_sheet >= app.tab_scroll);
+        assert!(
+            app.active_sheet - app.tab_scroll
+                < tab_strip_visible_count(&app, area, app.tab_scroll).max(1)
+        );
+
+        // Wrapping back to the first sheet resets the tab window to 0.
+        app.active_sheet = 0;
+        ensure_tab_scroll(&mut app, area);
+        assert_eq!(app.tab_scroll, 0);
     }
 }

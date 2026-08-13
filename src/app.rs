@@ -221,6 +221,8 @@ pub struct App {
     pub sheets: Vec<(String, DataTable)>,
     /// Index into self.sheets.
     pub active_sheet: usize,
+    /// First visible sheet index in the bottom tab bar.
+    pub tab_scroll: usize,
     pub viewport: Viewport,
     pub palette: ColorPalette,
     pub running: bool,
@@ -244,6 +246,7 @@ impl App {
         Self {
             sheets,
             active_sheet: 0,
+            tab_scroll: 0,
             viewport: Viewport::new(),
             palette: ColorPalette::default(),
             running: false,
