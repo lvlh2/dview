@@ -133,9 +133,40 @@ impl RowBackend {
 /// Number of rows to load in one I/O operation when the cache misses.
 const CSV_CACHE_WINDOW: usize = 500;
 
+/// Detect the encoding of a byte stream.  BOMs take priority; otherwise a
+/// statistical detector (chardetng) is used, which handles GBK/GB2312/
+/// GB18030, Big5, Shift_JIS, EUC-KR, and other legacy encodings.
+///
+/// chardetng can misreport EUC-JP/EUC-KR on short Chinese samples; since
+/// GB18030 (a GBK/GB2312 superset) is by far the most common legacy encoding
+/// for data files, a clean GB18030 decode is preferred over those guesses.
+fn detect_encoding(bytes: &[u8]) -> &'static encoding_rs::Encoding {
+    if let Some((encoding, _)) = encoding_rs::Encoding::for_bom(bytes) {
+        return encoding;
+    }
+    let mut detector = chardetng::EncodingDetector::new();
+    detector.feed(bytes, true);
+    let guess = detector.guess(None, true);
+
+    let name = guess.name();
+    if name == "EUC-JP" || name == "EUC-KR" {
+        let (_, _, had_errors) = encoding_rs::GB18030.decode(bytes);
+        if !had_errors {
+            return encoding_rs::GB18030;
+        }
+    }
+    guess
+}
+
+/// A `Read + Seek` source.  Needed because trait objects can only name one
+/// non-auto trait; used to hold either the raw file or an in-memory copy.
+trait SeekRead: Read + Seek {}
+impl<T: Read + Seek> SeekRead for T {}
+
 struct CsvBackend {
-    /// Buffered file reader positioned arbitrarily by seeks.
-    reader: BufReader<File>,
+    /// Buffered source positioned arbitrarily by seeks.  Either the raw
+    /// file (UTF-8) or an in-memory decoded copy (legacy encodings).
+    reader: BufReader<Box<dyn SeekRead>>,
     /// Byte offset of the start of each data row.  `offsets[i]` is the first
     /// byte of row `i`.  There are `total_rows + 1` entries so that
     /// `offsets[i+1]` gives the exclusive end of row `i`.
@@ -150,14 +181,47 @@ struct CsvBackend {
 impl CsvBackend {
     /// Build a byte-offset index from a CSV/TSV file.  Returns headers,
     /// estimated column widths, and the backend.
+    ///
+    /// Encoding: valid UTF-8 files are indexed lazily straight from disk
+    /// (byte-offset windows).  Non-UTF-8 files (GBK, Big5, Shift_JIS, …)
+    /// are auto-detected, transcoded to UTF-8 in full, and kept in memory —
+    /// stateful multibyte encodings can't be seeked by byte offset.
     fn open(path: &Path, delimiter: u8) -> Result<(Vec<String>, Vec<usize>, Self)> {
         let file = File::open(path)?;
         let file_size = file.metadata()?.len();
 
+        // Probe the file head for UTF-8 validity to pick the fast path.
+        let probe_len = std::cmp::min(64 * 1024, file_size) as usize;
+        let mut probe_buf = vec![0u8; probe_len];
+        {
+            let mut probe = BufReader::new(file);
+            let _ = probe.read_exact(&mut probe_buf);
+        }
+
+        let source: Box<dyn SeekRead> = if std::str::from_utf8(&probe_buf).is_ok() {
+            if file_size as usize <= probe_len {
+                // Whole file probed — serve it from memory.
+                Box::new(std::io::Cursor::new(probe_buf))
+            } else {
+                // Large file — re-open and seek past the probed prefix.
+                let mut f = BufReader::new(File::open(path)?);
+                f.seek(SeekFrom::Start(probe_len as u64))?;
+                Box::new(f)
+            }
+        } else {
+            // Legacy encoding: decode the whole file, seek within the copy.
+            let raw = std::fs::read(path)?;
+            let (decoded, _, _) = detect_encoding(&raw).decode(&raw);
+            Box::new(std::io::Cursor::new(decoded.into_owned().into_bytes()))
+        };
+
         let mut rdr = csv::ReaderBuilder::new()
             .delimiter(delimiter)
             .has_headers(true)
-            .from_reader(file);
+            // Rows with more/fewer fields than the header are shown as-is
+            // instead of aborting with an UnequalLengths error.
+            .flexible(true)
+            .from_reader(source);
 
         // Read header row.
         let headers: Vec<String> = rdr.headers()?.iter().map(|h| h.to_string()).collect();
@@ -267,6 +331,7 @@ impl CsvBackend {
         let mut rdr = csv::ReaderBuilder::new()
             .delimiter(self.delimiter)
             .has_headers(false)
+            .flexible(true)
             .from_reader(&buf[..]);
 
         let mut rows: Vec<Vec<String>> = Vec::with_capacity(end - start);
@@ -902,6 +967,13 @@ mod tests {
         path
     }
 
+    fn write_temp_bytes(ext: &str, content: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("dview_test_{}.{}", uuid_simple(), ext));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
     fn uuid_simple() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
         let t = SystemTime::now()
@@ -1237,6 +1309,123 @@ mod tests {
         for i in 40..60 {
             assert_eq!(table.get_row(i), &[format!("a{}", i), format!("b{}", i)]);
         }
+        std::fs::remove_file(&path).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // Encoding detection — legacy (non-UTF-8) CSV files
+    // -----------------------------------------------------------------------
+
+    /// Encode `text` with `encoding` and write it to a temp file.
+    fn write_encoded(
+        ext: &str,
+        text: &str,
+        encoding: &'static encoding_rs::Encoding,
+    ) -> std::path::PathBuf {
+        let (bytes, _, _) = encoding.encode(text);
+        write_temp_bytes(ext, &bytes)
+    }
+
+    fn load_csv_rows(path: &std::path::Path) -> (Vec<String>, usize, Vec<String>) {
+        let mut table = load_file(path).unwrap().into_iter().next().unwrap().1;
+        let headers = table.headers.clone();
+        let rows: Vec<String> = (0..table.total_rows())
+            .map(|i| table.get_row(i).join("|"))
+            .collect();
+        (headers, table.total_rows(), rows)
+    }
+
+    #[test]
+    fn test_csv_gbk_encoding() {
+        let path = write_encoded(
+            "csv",
+            "持仓,收盘价,数量\n10.5,11.20,100\n",
+            encoding_rs::GBK,
+        );
+        let (headers, total, rows) = load_csv_rows(&path);
+        assert_eq!(headers, vec!["持仓", "收盘价", "数量"]);
+        assert_eq!(total, 1);
+        assert_eq!(rows, vec!["10.5|11.20|100"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_gb2312_encoding() {
+        let path = write_encoded(
+            "csv",
+            "股票,涨跌幅\n平安银行,3.21\n招商银行,-1.05\n",
+            encoding_rs::GBK, // GBK superset; chars above are GB2312-compatible
+        );
+        let (headers, total, rows) = load_csv_rows(&path);
+        assert_eq!(headers, vec!["股票", "涨跌幅"]);
+        assert_eq!(total, 2);
+        assert_eq!(rows, vec!["平安银行|3.21", "招商银行|-1.05"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_gb18030_encoding() {
+        // 𠀀 (U+20000) is outside GBK and requires a GB18030 4-byte sequence.
+        let path = write_encoded("csv", "字符,值\n𠀀,1\n", encoding_rs::GB18030);
+        let (headers, total, rows) = load_csv_rows(&path);
+        assert_eq!(headers, vec!["字符", "值"]);
+        assert_eq!(total, 1);
+        assert_eq!(rows, vec!["𠀀|1"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_utf16le_bom_encoding() {
+        let path = write_encoded(
+            "csv",
+            "\u{FEFF}名称,日期\n项目A,2026-01-01\n",
+            encoding_rs::UTF_16LE,
+        );
+        let (headers, total, rows) = load_csv_rows(&path);
+        assert_eq!(headers, vec!["名称", "日期"]);
+        assert_eq!(total, 1);
+        assert_eq!(rows, vec!["项目A|2026-01-01"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_utf8_bom_encoding() {
+        // BOM is valid UTF-8, so this must keep working on the fast path.
+        let path = write_encoded(
+            "csv",
+            "\u{FEFF}名称,日期\n项目A,2026-01-01\n",
+            encoding_rs::UTF_8,
+        );
+        let (headers, total, rows) = load_csv_rows(&path);
+        assert_eq!(headers, vec!["名称", "日期"]);
+        assert_eq!(total, 1);
+        assert_eq!(rows, vec!["项目A|2026-01-01"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_big5_encoding() {
+        let path = write_encoded(
+            "csv",
+            "股票,收盤價\n台積電,950.0\n鴻海,198.5\n",
+            encoding_rs::BIG5,
+        );
+        let (headers, total, rows) = load_csv_rows(&path);
+        assert_eq!(headers, vec!["股票", "收盤價"]);
+        assert_eq!(total, 2);
+        assert_eq!(rows, vec!["台積電|950.0", "鴻海|198.5"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_ragged_rows() {
+        // Rows with more/fewer fields than the header must not abort loading.
+        let path = write_temp("csv", "A,B\n1,2\n1,2,3\n1\n");
+        let mut table = load_file(&path).unwrap().into_iter().next().unwrap().1;
+        assert_eq!(table.total_rows(), 3);
+        assert_eq!(table.get_row(0), &["1", "2"]);
+        assert_eq!(table.get_row(1), &["1", "2", "3"]);
+        assert_eq!(table.get_row(2), &["1"]);
         std::fs::remove_file(&path).ok();
     }
 }
