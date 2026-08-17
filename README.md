@@ -2,7 +2,7 @@
 
 A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and Parquet files directly in your terminal.
 
-![version](https://img.shields.io/badge/version-0.2.2-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 
 ## Screenshots
 
@@ -13,6 +13,7 @@ A terminal data file viewer with vim-style navigation. Open CSV, TSV, Excel, and
 ## Features
 
 - **Zero-config** — open `.csv`, `.tsv`, `.xls`, `.xlsx`, `.parquet` files instantly
+- **Auto encoding detection** — GBK/GB2312/GB18030, Big5, Shift_JIS, UTF-16 (BOM) and other legacy encodings are detected and decoded automatically
 - **Vim keybindings** — `hjkl` for cursor movement, `HJKL` / Shift+arrows for view scroll, `gg`/`G`/`0`/`$` for jumps
 - **Multi-sheet Excel** — tab bar at the bottom, `[`/`]` to switch sheets
 - **CJK support** — correct column alignment for Chinese, Japanese, Korean characters
@@ -33,7 +34,7 @@ dview data.csv
 
 ### Build from Source
 
-Requires Rust 1.82+ (edition 2024).
+Requires Rust 1.85+ (edition 2024).
 
 ```bash
 git clone https://github.com/lvlh2/dview.git
@@ -55,14 +56,16 @@ dview export.parquet
 | ------------------------------ | ---------------------------- |
 | `h` `j` `k` `l` / arrows       | Move cursor                  |
 | `H` `J` `K` `L` / Shift+arrows | Scroll view (cursor follows) |
-| `Ctrl+F` `Ctrl+B`              | Page down / up               |
-| `gg`                           | Jump to first row            |
+| `gg` (press `g` twice)         | Jump to first row            |
 | `G`                            | Jump to last row             |
 | `0`                            | Jump to first column         |
 | `$`                            | Jump to last column          |
+| `Home` / `End`                 | Jump to first / last row     |
+| `Ctrl+F` `Ctrl+B`              | Page down / up               |
+| `PageDown` / `PageUp`          | Page down / up               |
 | `[` `]`                        | Previous / next sheet        |
 | `?`                            | Help screen                  |
-| `q` `Esc`                      | Quit                         |
+| `q` `Esc` `Ctrl+C`             | Quit                         |
 
 Press `?` at any time to see the full help screen.
 
