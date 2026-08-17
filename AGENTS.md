@@ -1,7 +1,5 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
-
 ## Build / Test / Install
 
 ```bash
@@ -44,7 +42,7 @@ cargo install --path .
 `DataTable` stores `headers` and `column_widths` in memory. Rows are handled by a private `RowBackend` enum:
 
 - **`RowBackend::InMemory(Vec<Vec<String>>)`** — Excel files, small CSV/Parquet, and all tests. `get_row(idx)` returns `&rows[idx]`. `prefetch_range` is a no-op.
-- **`RowBackend::Csv(CsvBackend)`** — Byte-offset indexed. On open: sequential pass builds `Vec<u64>` offset index (8 bytes × N rows) and sampled column widths. On `prefetch_range`/`get_row`: seeks `BufReader<File>` to the byte offset, reads a window (~500 rows), parses with `csv::Reader`. Only the cached window is in memory.
+- **`RowBackend::Csv(CsvBackend)`** — Byte-offset indexed. On open: a 64 KB probe checks UTF-8 validity; valid-UTF-8 files (large ones) are indexed lazily via a sequential pass that builds `Vec<u64>` offset index (8 bytes × N rows) and sampled column widths. Non-UTF-8 files are auto-detected (`detect_encoding`: BOM → chardetng statistical detection; EUC-JP/EUC-KR guesses are demoted in favor of a clean GB18030 decode) and transcoded to UTF-8 in memory (`Cursor` as source — stateful multibyte encodings can't be byte-seeked). On `prefetch_range`/`get_row`: seeks the `Box<dyn SeekRead>` source (raw file or decoded copy) to the byte offset, reads a window (~500 rows), parses with `csv::Reader`. Only the cached window is in memory (except fully-decoded legacy files). Both csv readers use `.flexible(true)` — ragged rows (field count ≠ header count) must load and render, never abort. Rows with extra fields render with those fields hidden: the UI indexes cells by header position (`row.get(ci).unwrap_or("")` in `ui.rs`), and the index pass samples widths only for `i < num_cols`.
 - **`RowBackend::Parquet(ParquetBackend)`** — Row-group lazy loading. On open: reads metadata only (schema + row group boundaries), samples first row group for widths. On `prefetch_range`/`get_row`: uses `with_row_selection(RowSelection)` to read only the target rows (±200 margin) from the relevant row group, avoiding full row group decompression.
 
 Key API:
