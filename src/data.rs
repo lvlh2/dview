@@ -203,10 +203,9 @@ impl CsvBackend {
                 // Whole file probed — serve it from memory.
                 Box::new(std::io::Cursor::new(probe_buf))
             } else {
-                // Large file — re-open and seek past the probed prefix.
-                let mut f = BufReader::new(File::open(path)?);
-                f.seek(SeekFrom::Start(probe_len as u64))?;
-                Box::new(f)
+                // Re-open from byte zero. The probe only determines encoding;
+                // parsing must still include the CSV header.
+                Box::new(File::open(path)?)
             }
         } else {
             // Legacy encoding: decode the whole file, seek within the copy.
@@ -1273,6 +1272,32 @@ mod tests {
         assert_eq!(table.get_row(1000), &["r1000", "c1000"]);
         // Row 0 may no longer be cached, but re-reading should work anyway.
         assert_eq!(table.get_row(0), &["r0", "c0"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_csv_backend_large_file_keeps_header_and_first_row() {
+        let mut csv = String::from("Date,Code,Value\n");
+        for i in 0..5_000 {
+            csv.push_str(&format!(
+                "2026-01-{:05},CODE{i:05},{i}.123456789012345\n",
+                i
+            ));
+        }
+        assert!(csv.len() > 64 * 1024);
+
+        let path = write_temp("csv", &csv);
+        let mut table = load_file(&path).unwrap().into_iter().next().unwrap().1;
+        assert_eq!(table.headers, vec!["Date", "Code", "Value"]);
+        assert_eq!(table.total_rows(), 5_000);
+        assert_eq!(
+            table.get_row(0),
+            &["2026-01-00000", "CODE00000", "0.123456789012345"]
+        );
+        assert_eq!(
+            table.get_row(4_999),
+            &["2026-01-04999", "CODE04999", "4999.123456789012345"]
+        );
         std::fs::remove_file(&path).ok();
     }
 
