@@ -1,3 +1,14 @@
+## [0.3.1] - 2026-08-19
+
+### 🐛 Bug Fixes
+
+- *(csv)* Preserve header in large files
+
+### 📚 Documentation
+
+- *(changelog)* Backfill full history
+- Update README for v0.3.0, drop cliff.toml
+- Streamline agent guidance
 ## [0.3.0] - 2026-08-17
 
 ### 🚀 Features
